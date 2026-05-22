@@ -1,5 +1,10 @@
 # React + Vite
 
+## API and CORS
+
+- **Local dev (`npm run dev`)** and **`npm run preview`**: keep `VITE_API_BASE_URL` unset. The app calls same-origin `/api/...`; Vite proxies those requests to the real backend (see `vite.config.js` and `VITE_API_PROXY_TARGET` in `.env.example`). That avoids browser CORS during development, including when you open the app via a LAN IP (e.g. from a phone).
+- **Production build** on a host different from the API: set `VITE_API_BASE_URL` at build time to your API origin. Your backend must return appropriate `Access-Control-Allow-*` headers for that frontend origin, **or** put both behind one reverse proxy so the browser sees a single origin.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:
