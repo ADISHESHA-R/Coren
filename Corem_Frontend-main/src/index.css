@@ -1,0 +1,112 @@
+:root {
+  /* Light theme (default) */
+  --app-bg: #f3f6fb;
+  --app-gradient: radial-gradient(circle at top right, #d7e9ff 0%, #eef4ff 40%, #f7f9ff 100%);
+  --surface: #ffffff;
+  --surface-hover: #f1f5f9;
+  --surface-muted: #f8fafc;
+  --border: #e8edff;
+  --border-strong: #e2e8f0;
+  --text: #101828;
+  --text-secondary: #64748b;
+  --text-muted: #475569;
+  --brand-title: #172554;
+  --accent: #2758e2;
+  --accent-soft-bg: #e9efff;
+  --accent-soft-hover: #eef2ff;
+  --header-bg: #ffffff;
+  --header-border: #e5eaf7;
+  --pill-text: #2758e2;
+  --pill-bg: #e9efff;
+  --notify-panel-bg: #ffffff;
+  --notify-item-border: #f1f5f9;
+  --notify-unread-text: #0f172a;
+  --notify-message: #334155;
+  --notify-shadow: rgba(15, 23, 42, 0.15);
+  --section-shadow: rgba(32, 63, 129, 0.08);
+  --card-shadow: rgba(32, 63, 129, 0.14);
+  --avatar-bg: #dbe7ff;
+  --avatar-text: #2149bb;
+  --logout-hover-bg: #fef2f2;
+  --form-border: #d0d8ef;
+  --theme-toggle-bg: #f1f5f9;
+  --theme-toggle-color: #475569;
+  --theme-toggle-hover-bg: #e8edf5;
+  --theme-toggle-border: transparent;
+  --login-result-bg: #f6fff8;
+  --login-result-border: #d6f3dd;
+  --brand-tag-text: #2e5ae8;
+  --brand-tag-bg: #ecf1ff;
+  --modal-surface: #ffffff;
+  --table-bg: transparent;
+  --toast-bg: #101828;
+  --toast-fg: #ffffff;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --app-bg: #0c1017;
+  --app-gradient: radial-gradient(circle at top right, #152238 0%, #101820 45%, #0c1017 100%);
+  --surface: #151b24;
+  --surface-hover: #1c2533;
+  --surface-muted: #1a2330;
+  --border: #2a3544;
+  --border-strong: #364152;
+  --text: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #cbd5e1;
+  --brand-title: #e8edf5;
+  --accent: #7ca3ff;
+  --accent-soft-bg: rgba(124, 163, 255, 0.12);
+  --accent-soft-hover: rgba(124, 163, 255, 0.22);
+  --header-bg: #121820;
+  --header-border: #2a3544;
+  --pill-text: #a5bfff;
+  --pill-bg: rgba(124, 163, 255, 0.15);
+  --notify-panel-bg: #1a2330;
+  --notify-item-border: #2a3544;
+  --notify-unread-text: #f8fafc;
+  --notify-message: #cbd5e1;
+  --notify-shadow: rgba(0, 0, 0, 0.5);
+  --section-shadow: rgba(0, 0, 0, 0.35);
+  --card-shadow: rgba(0, 0, 0, 0.45);
+  --avatar-bg: #2a3a52;
+  --avatar-text: #b8c9ff;
+  --logout-hover-bg: rgba(248, 113, 113, 0.15);
+  --form-border: #3d4a5c;
+  --theme-toggle-bg: #1c2533;
+  --theme-toggle-color: #e2e8f0;
+  --theme-toggle-hover-bg: #2a3544;
+  --theme-toggle-border: #364152;
+  --login-result-bg: rgba(34, 197, 94, 0.08);
+  --login-result-border: rgba(34, 197, 94, 0.35);
+  --brand-tag-text: #93c5fd;
+  --brand-tag-bg: rgba(59, 130, 246, 0.15);
+  --modal-surface: #1a2330;
+  --table-bg: #151b24;
+  --toast-bg: #e8edf5;
+  --toast-fg: #0f172a;
+}
+
+:root {
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: var(--text);
+  background-color: var(--app-bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background-color: var(--app-bg);
+  color: var(--text);
+}

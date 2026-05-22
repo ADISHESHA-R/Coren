@@ -1,0 +1,6 @@
+# Root-level secrets and OS noise
+.env
+.env.*
+*.pem
+Thumbs.db
+.DS_Store

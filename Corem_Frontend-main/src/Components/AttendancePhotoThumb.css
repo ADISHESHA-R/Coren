@@ -1,0 +1,29 @@
+.attendance-photo-thumb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+}
+
+.attendance-photo-thumb__img {
+  display: block;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.attendance-photo-thumb__spinner {
+  display: inline-block;
+  width: 28px;
+  height: 28px;
+  border: 2px solid #dee2e6;
+  border-top-color: #0d6efd;
+  border-radius: 50%;
+  animation: attendance-photo-thumb-spin 0.7s linear infinite;
+}
+
+@keyframes attendance-photo-thumb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
