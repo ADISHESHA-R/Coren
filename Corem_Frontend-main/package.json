@@ -7,9 +7,15 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start": "node ./server/render-serve.mjs"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
+    "express": "^4.21.2",
+    "http-proxy-middleware": "^3.0.5",
     "bootstrap": "^5.3.8",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

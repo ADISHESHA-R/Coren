@@ -1,0 +1,17 @@
+# Optional: connect this repo in Render → Blueprints → New Blueprint Instance
+# Or create a Web Service manually (see Corem_Frontend-main/RENDER_DEPLOY.md).
+services:
+  - type: web
+    name: coren-web
+    runtime: node
+    rootDir: Corem_Frontend-main
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: API_PROXY_TARGET
+        value: https://backendclientapi.onrender.com
+      - key: VITE_SAME_ORIGIN_API
+        value: "true"

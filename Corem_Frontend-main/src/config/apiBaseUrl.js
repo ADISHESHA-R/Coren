@@ -14,6 +14,9 @@
  *
  * **Deployed SPA** (Netlify, S3, etc.): set `VITE_API_BASE_URL` at build time to your API origin, and configure
  * the API server to allow `Access-Control-Allow-Origin` for your frontend origin (or use a reverse proxy so both are same-origin).
+ *
+ * **Render Web Service** (this repo’s `npm start` server): set at build time `VITE_SAME_ORIGIN_API=true` so the
+ * bundle calls `/api/...` on the same host; `server/render-serve.mjs` proxies to `API_PROXY_TARGET` (no browser CORS).
  */
 const PRODUCTION_DEFAULT = 'https://backendclientapi.onrender.com'
 
@@ -46,6 +49,11 @@ function resolveApiBaseUrl() {
 
   // `vite dev` — always same-origin + proxy regardless of hostname (tunnel, custom hosts).
   if (import.meta.env.DEV) return ''
+
+  // Production build served behind our Node proxy (Render Web Service) — same-origin `/api`.
+  if (import.meta.env.VITE_SAME_ORIGIN_API === 'true' || import.meta.env.VITE_SAME_ORIGIN_API === '1') {
+    return ''
+  }
 
   return PRODUCTION_DEFAULT
 }
