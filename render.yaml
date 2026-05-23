@@ -1,17 +1,20 @@
-# Optional: connect this repo in Render → Blueprints → New Blueprint Instance
-# Or create a Web Service manually (see Corem_Frontend-main/RENDER_DEPLOY.md).
+# Render Blueprint: static site + CDN rewrite so /api/* is served from the real API (same browser origin → no CORS).
+# Apply: Dashboard → Blueprints → connect repo, or paste routes manually on your existing Static Site:
+#   Rewrite  /api/*  →  https://backendclientapi.onrender.com/api/*
+#   Rewrite  /*      →  /index.html   (SPA fallback; list AFTER /api so API wins)
+#
+# Alternative: keep a Node Web Service (npm start) — see Corem_Frontend-main/RENDER_DEPLOY.md
 services:
   - type: web
-    name: coren-web
-    runtime: node
+    name: coren
+    runtime: static
     rootDir: Corem_Frontend-main
     buildCommand: npm install && npm run build
-    startCommand: npm start
-    healthCheckPath: /healthz
-    envVars:
-      - key: NODE_VERSION
-        value: "22"
-      - key: API_PROXY_TARGET
-        value: https://backendclientapi.onrender.com
-      - key: VITE_SAME_ORIGIN_API
-        value: "true"
+    staticPublishPath: ./Corem_Frontend-main/dist
+    routes:
+      - type: rewrite
+        source: /api/*
+        destination: https://backendclientapi.onrender.com/api/*
+      - type: rewrite
+        source: /*
+        destination: /index.html

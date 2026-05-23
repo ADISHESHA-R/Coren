@@ -15,10 +15,17 @@
  * **Deployed SPA** (Netlify, S3, etc.): set `VITE_API_BASE_URL` at build time to your API origin, and configure
  * the API server to allow `Access-Control-Allow-Origin` for your frontend origin (or use a reverse proxy so both are same-origin).
  *
- * **Render Web Service** (this repo’s `npm start` server): set at build time `VITE_SAME_ORIGIN_API=true` so the
- * bundle calls `/api/...` on the same host; `server/render-serve.mjs` proxies to `API_PROXY_TARGET` (no browser CORS).
+ * **Render Web Service** (`npm start`): set `VITE_SAME_ORIGIN_API=true` at build; `server/render-serve.mjs` proxies `/api`.
+ *
+ * **Render Static Site**: add a CDN **rewrite** `/api/*` → your API (see root `render.yaml`). The bundle uses
+ * same-origin `/api` when the page is served from `*.onrender.com` (no `VITE_API_BASE_URL` override).
  */
 const PRODUCTION_DEFAULT = 'https://backendclientapi.onrender.com'
+
+function isRenderHostedHostname(hostname) {
+  if (!hostname || typeof hostname !== 'string') return false
+  return hostname.endsWith('.onrender.com')
+}
 
 /** True for localhost and typical LAN dev hosts (phone testing same Wi‑Fi). */
 function isSameOriginDevHostname(hostname) {
@@ -45,6 +52,8 @@ function resolveApiBaseUrl() {
   if (typeof window !== 'undefined') {
     const h = window.location.hostname
     if (isSameOriginDevHostname(h)) return ''
+    // Render Static Site + CDN rewrite `/api/*` → real API: browser stays same-origin, no CORS.
+    if (isRenderHostedHostname(h)) return ''
   }
 
   // `vite dev` — always same-origin + proxy regardless of hostname (tunnel, custom hosts).

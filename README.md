@@ -10,6 +10,8 @@ npm run dev
 
 ## Render (production)
 
-**Static Site** + separate API → browser CORS unless the API is configured for your frontend origin.
+**Static Site on `*.onrender.com`:** add CDN **rewrite** `/api/*` → your API (see `Corem_Frontend-main/RENDER_DEPLOY.md` and root `render.yaml`). The app calls same-origin `/api` automatically on Render.
 
-**Recommended:** deploy as a **Web Service** with `npm start` (see `Corem_Frontend-main/RENDER_DEPLOY.md` or root `render.yaml`). Optional blueprint: Render → **Blueprints** → connect repo and apply `render.yaml`.
+**Web Service:** `npm start` proxies `/api` — see `RENDER_DEPLOY.md`.
+
+Optional blueprint: Render → **Blueprints** → `render.yaml`.
