@@ -79,6 +79,11 @@ export default defineConfig(({ mode }) => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,jpg,jpeg,webp,woff2}'],
+          /** New cache name so old precached bundles are dropped after deploy. */
+          cacheId: 'corem-pwa-v3',
+          /** SPA shell only for real navigations; never treat /api as the app shell. */
+          navigateFallback: '/index.html',
+          navigateFallbackDenylist: [/^\/api\b/],
         },
       }),
     ],

@@ -59,3 +59,4 @@ Use the **Web Service URL** (or point your domain to it). Turn off the old Stati
 - **CORS** on `login`: the request is still going to the **API host** in the Network tab → rebuild/deploy the frontend, or you still have `VITE_API_BASE_URL` set to the full API URL in Render **build** env (remove it for Option A).
 - **404** on `/api/...`: the **CDN rewrite** is missing or wrong — fix Option A1 routes.
 - **403** on **preflight** to the API host only: fix **backend** CORS / `OPTIONS` (Option A should avoid the browser calling the API host at all).
+- **HTTP 200 + empty body** on `/api/auth/.../login` (content-length 0): the response is **not** your API JSON — usually **Render `/api` rewrite not applied to POST** or an edge returns an empty body. Re-check rewrite order and destination `https://<your-api-host>/api/*`. Or use **Option B (Web Service)** so Node proxies POST correctly.

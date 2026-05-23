@@ -7,6 +7,26 @@ import 'bootstrap/dist/css/bootstrap.min.css';
 
 initTheme();
 
+/** One-time: old PWA service workers could serve stale JS (login showed wrong errors after deploy). */
+const COREM_SW_CLEAR_KEY = 'corem-sw-cleared-v3';
+/** @returns {Promise<boolean>} true if page is reloading (do not mount React). */
+async function clearStaleServiceWorkersOnce() {
+  if (!import.meta.env.PROD || !('serviceWorker' in navigator)) return false;
+  if (localStorage.getItem(COREM_SW_CLEAR_KEY)) return false;
+  try {
+    const regs = await navigator.serviceWorker.getRegistrations();
+    await Promise.all(regs.map((r) => r.unregister()));
+    localStorage.setItem(COREM_SW_CLEAR_KEY, '1');
+    if (regs.length > 0) {
+      window.location.reload();
+      return true;
+    }
+  } catch {
+    localStorage.setItem(COREM_SW_CLEAR_KEY, '1');
+  }
+  return false;
+}
+
 class RootErrorBoundary extends Component {
   constructor(props) {
     super(props);
@@ -49,11 +69,14 @@ const rootEl = document.getElementById('root');
 if (!rootEl) {
   document.body.innerHTML = '<p style="padding:1rem">Missing #root in index.html</p>';
 } else {
-  createRoot(rootEl).render(
-    <StrictMode>
-      <RootErrorBoundary>
-        <App />
-      </RootErrorBoundary>
-    </StrictMode>,
-  );
+  void clearStaleServiceWorkersOnce().then((reloading) => {
+    if (reloading) return;
+    createRoot(rootEl).render(
+      <StrictMode>
+        <RootErrorBoundary>
+          <App />
+        </RootErrorBoundary>
+      </StrictMode>,
+    );
+  });
 }

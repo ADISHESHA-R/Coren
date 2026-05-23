@@ -29,21 +29,26 @@ async function loginByRole(endpoint, credentials) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(credentials),
+    cache: "no-store",
   });
 
   const text = await response.text();
   const trimmed = text.trim();
+  const contentLength = response.headers.get("content-length");
   let payload = {};
   if (trimmed) {
     try {
-      payload = JSON.parse(trimmed);
+      const parsed = JSON.parse(trimmed);
+      payload =
+        parsed != null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : { __nonJson: true };
     } catch {
       payload = { __nonJson: true };
     }
   }
 
   const looksHtml = /^<!DOCTYPE/i.test(trimmed) || /^<html/i.test(trimmed);
-  return { response, payload, bodyEmpty: !trimmed, looksHtml };
+  const bodyEmpty = !trimmed || contentLength === "0";
+  return { response, payload, bodyEmpty, looksHtml, contentLength };
 }
 
 function LoginPage() {
@@ -147,7 +152,7 @@ function LoginPage() {
       let firstErrorMessage = "Login failed. Please check your credentials.";
 
       for (const attempt of LOGIN_ATTEMPTS) {
-        const { response, payload, bodyEmpty, looksHtml } = await loginByRole(attempt.endpoint, credentials);
+        const { response, payload, bodyEmpty, looksHtml, contentLength } = await loginByRole(attempt.endpoint, credentials);
 
         if (!response.ok) {
           if (payload?.message && firstErrorMessage === "Login failed. Please check your credentials.") {
@@ -159,7 +164,10 @@ function LoginPage() {
         // HTTP 200 but unusable body (common when CDN /api rewrite returns empty or HTML instead of API JSON).
         if (bodyEmpty) {
           firstErrorMessage =
-            "Login returned an empty response. Check Render: add a rewrite /api/* → your real API URL (see RENDER_DEPLOY.md). Wrong credentials is not the issue here.";
+            `Login returned an empty body (HTTP ${response.status}, content-length: ${contentLength ?? "?"}). ` +
+            "This is not wrong credentials — the browser did not get JSON from your API. " +
+            "Fix Render **Redirects/Rewrites**: rewrite `/api/*` → `https://backendclientapi.onrender.com/api/*` before the SPA `/*` rule, then hard-refresh. " +
+            "If you use “Install app”, open DevTools → Application → Service Workers → Unregister, then reload. See RENDER_DEPLOY.md.";
           continue;
         }
         if (looksHtml || payload.__nonJson) {
