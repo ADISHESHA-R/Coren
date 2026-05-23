@@ -31,14 +31,19 @@ async function loginByRole(endpoint, credentials) {
     body: JSON.stringify(credentials),
   });
 
+  const text = await response.text();
+  const trimmed = text.trim();
   let payload = {};
-  try {
-    payload = await response.json();
-  } catch (error) {
-    payload = {};
+  if (trimmed) {
+    try {
+      payload = JSON.parse(trimmed);
+    } catch {
+      payload = { __nonJson: true };
+    }
   }
 
-  return { response, payload };
+  const looksHtml = /^<!DOCTYPE/i.test(trimmed) || /^<html/i.test(trimmed);
+  return { response, payload, bodyEmpty: !trimmed, looksHtml };
 }
 
 function LoginPage() {
@@ -142,38 +147,60 @@ function LoginPage() {
       let firstErrorMessage = "Login failed. Please check your credentials.";
 
       for (const attempt of LOGIN_ATTEMPTS) {
-        const { response, payload } = await loginByRole(attempt.endpoint, credentials);
-        if (response.ok && payload.success) {
-          const extracted = extractTokensFromAuthPayload(payload);
-          if (!extracted) {
-            firstErrorMessage = payload?.message || "Login response was missing tokens.";
-            continue;
+        const { response, payload, bodyEmpty, looksHtml } = await loginByRole(attempt.endpoint, credentials);
+
+        if (!response.ok) {
+          if (payload?.message && firstErrorMessage === "Login failed. Please check your credentials.") {
+            firstErrorMessage = payload.message;
           }
-
-          const loginResult = {
-            role: attempt.role,
-            message: payload.message || "Login successful",
-            accessToken: extracted.accessToken,
-            refreshToken: extracted.refreshToken,
-            tokenType: extracted.tokenType,
-            expiresIn: extracted.expiresIn,
-          };
-
-          storeAuthState(loginResult, credentials.email, true);
-          const dataObj = payload.data && typeof payload.data === "object" ? payload.data : {};
-          if (dataObj.id != null || dataObj.employeeId != null) {
-            localStorage.setItem("userId", String(dataObj.id ?? dataObj.employeeId));
-          }
-
-          setResult(loginResult);
-          notifyAuthChanged();
-          if (showToast) showToast("Login successful.");
-          return;
+          continue;
         }
 
-        if (payload?.message && firstErrorMessage === "Login failed. Please check your credentials.") {
-          firstErrorMessage = payload.message;
+        // HTTP 200 but unusable body (common when CDN /api rewrite returns empty or HTML instead of API JSON).
+        if (bodyEmpty) {
+          firstErrorMessage =
+            "Login returned an empty response. Check Render: add a rewrite /api/* → your real API URL (see RENDER_DEPLOY.md). Wrong credentials is not the issue here.";
+          continue;
         }
+        if (looksHtml || payload.__nonJson) {
+          firstErrorMessage =
+            "Login returned HTML or non-JSON instead of the API response. Your /api/* route is probably serving the SPA, not the backend. Fix Redirects/Rewrites on Render.";
+          continue;
+        }
+        if (payload.success !== true) {
+          if (payload?.message) {
+            firstErrorMessage = payload.message;
+          } else if (firstErrorMessage === "Login failed. Please check your credentials.") {
+            firstErrorMessage = "Login was not accepted (API did not return success: true).";
+          }
+          continue;
+        }
+
+        const extracted = extractTokensFromAuthPayload(payload);
+        if (!extracted) {
+          firstErrorMessage = payload?.message || "Login response was missing tokens.";
+          continue;
+        }
+
+        const loginResult = {
+          role: attempt.role,
+          message: payload.message || "Login successful",
+          accessToken: extracted.accessToken,
+          refreshToken: extracted.refreshToken,
+          tokenType: extracted.tokenType,
+          expiresIn: extracted.expiresIn,
+        };
+
+        storeAuthState(loginResult, credentials.email, true);
+        const dataObj = payload.data && typeof payload.data === "object" ? payload.data : {};
+        if (dataObj.id != null || dataObj.employeeId != null) {
+          localStorage.setItem("userId", String(dataObj.id ?? dataObj.employeeId));
+        }
+
+        setResult(loginResult);
+        notifyAuthChanged();
+        if (showToast) showToast("Login successful.");
+        return;
       }
 
       throw new Error(firstErrorMessage);
