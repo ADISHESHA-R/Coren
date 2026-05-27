@@ -1,7 +1,7 @@
 :root {
   /* Light theme (default) */
-  --app-bg: #f3f6fb;
-  --app-gradient: radial-gradient(circle at top right, #d7e9ff 0%, #eef4ff 40%, #f7f9ff 100%);
+  --app-bg: #f4f6f8;
+  --app-gradient: radial-gradient(ellipse 120% 80% at 100% 0%, #e8eefc 0%, #f1f4f8 42%, #f6f7f9 100%);
   --surface: #ffffff;
   --surface-hover: #f1f5f9;
   --surface-muted: #f8fafc;
@@ -41,6 +41,16 @@
   --table-bg: transparent;
   --toast-bg: #101828;
   --toast-fg: #ffffff;
+  /* Site job workflow (tables, stepper) */
+  --workflow-pill-bg: #f1f5f9;
+  --workflow-pill-border: #e2e8f0;
+  --workflow-pill-text: #0f172a;
+  --workflow-table-border: #cbd5e1;
+  --workflow-table-head: #f1f5f9;
+  --workflow-table-row-alt: rgba(248, 250, 252, 0.85);
+  --workflow-job-box-bg: linear-gradient(145deg, #ffffff 0%, #f8fafc 100%);
+  --workflow-job-box-border: #cbd5e1;
+  --workflow-scroll-hint: rgba(15, 23, 42, 0.06);
 }
 
 html[data-theme="dark"] {
@@ -86,10 +96,19 @@ html[data-theme="dark"] {
   --table-bg: #151b24;
   --toast-bg: #e8edf5;
   --toast-fg: #0f172a;
+  --workflow-pill-bg: #1a2330;
+  --workflow-pill-border: #334155;
+  --workflow-pill-text: #e2e8f0;
+  --workflow-table-border: #475569;
+  --workflow-table-head: #1e293b;
+  --workflow-table-row-alt: rgba(30, 41, 59, 0.45);
+  --workflow-job-box-bg: linear-gradient(145deg, #1a2330 0%, #151b24 100%);
+  --workflow-job-box-border: #475569;
+  --workflow-scroll-hint: rgba(0, 0, 0, 0.35);
 }
 
 :root {
-  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  font-family: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   line-height: 1.5;
   font-weight: 400;
   color: var(--text);
@@ -109,4 +128,9 @@ body {
   min-width: 320px;
   background-color: var(--app-bg);
   color: var(--text);
+}
+
+/* Bootstrap utility: keep muted text on-theme */
+body .text-muted {
+  color: var(--text-secondary) !important;
 }

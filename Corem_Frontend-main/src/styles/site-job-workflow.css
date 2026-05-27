@@ -1,12 +1,20 @@
-/* Site job workflow — scoped layout; does not alter global admin styles */
+/* Site job workflow — layout + theme tokens from index.css */
 .site-job-workflow {
-  font-size: 0.875rem;
+  font-size: 0.9rem;
   max-width: 100%;
   min-width: 0;
+  color: var(--text);
+}
+
+.site-job-workflow .section-title {
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--brand-title);
 }
 
 .site-job-workflow__muted {
-  color: var(--text-secondary, #6c757d);
+  color: var(--text-secondary);
 }
 
 .site-job-workflow__step-panel {
@@ -14,9 +22,9 @@
 }
 
 .site-job-workflow__panel {
-  background: var(--surface-muted, #f1f3f5);
-  border-color: var(--border-strong, #dee2e6) !important;
-  color: var(--text, inherit);
+  background: var(--surface-muted);
+  border-color: var(--border-strong) !important;
+  color: var(--text);
 }
 
 .site-job-workflow__att-user-select {
@@ -33,83 +41,144 @@
   flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 1rem;
-  padding-bottom: 0.75rem;
-  border-bottom: 2px solid var(--border-strong, #dee2e6);
+  gap: 1rem 1.25rem;
+  margin-bottom: 1.25rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border-strong);
 }
 
 .site-job-workflow__job-box {
-  border: 2px solid var(--border-strong, #111);
-  padding: 0.35rem 0.75rem;
-  min-width: 6rem;
+  border: 1px solid var(--workflow-job-box-border, var(--border-strong));
+  border-radius: 12px;
+  padding: 0.65rem 1.1rem;
+  min-width: 6.5rem;
   text-align: center;
   font-weight: 700;
+  background: var(--workflow-job-box-bg, var(--surface-muted));
+  box-shadow: 0 1px 2px var(--workflow-scroll-hint);
+}
+
+.site-job-workflow__job-box .small {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
 }
 
 .site-job-workflow__stepper {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem;
-  margin-bottom: 1rem;
+  gap: 0.45rem;
+  margin-bottom: 1.25rem;
 }
 
 .site-job-workflow__step-pill {
-  padding: 0.25rem 0.5rem;
-  border-radius: 6px;
-  border: 1px solid var(--border-strong, #ccc);
-  background: var(--surface-muted, #f8f9fa);
-  font-size: 0.75rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: 10px;
+  border: 1px solid var(--workflow-pill-border, var(--border-strong));
+  background: var(--workflow-pill-bg, var(--surface-muted));
+  color: var(--workflow-pill-text, var(--text));
+  font-size: 0.78rem;
+  font-weight: 500;
   cursor: pointer;
   text-align: left;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 button.site-job-workflow__step-pill {
   font: inherit;
-  line-height: inherit;
-  color: inherit;
+  line-height: 1.35;
+  /* Do not use color: inherit — it overrides --active white text (loses to tag+class specificity). */
+}
+
+.site-job-workflow__step-pill:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.site-job-workflow__step-pill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .site-job-workflow__step-pill--active {
-  background: var(--accent, #0d6efd);
-  color: #fff;
-  border-color: var(--accent, #0d6efd);
+  background: var(--accent);
+  color: #ffffff;
+  border-color: color-mix(in srgb, var(--accent) 88%, #000);
+  font-weight: 600;
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
-.site-job-workflow__step-pill--done {
-  border-color: #198754;
-  color: #198754;
+.site-job-workflow__step-pill--done:not(.site-job-workflow__step-pill--active) {
+  border-color: #22c55e;
+  color: #15803d;
+  background: color-mix(in srgb, #22c55e 10%, var(--workflow-pill-bg, #f8fafc));
+}
+
+html[data-theme="dark"] .site-job-workflow__step-pill--done:not(.site-job-workflow__step-pill--active) {
+  color: #86efac;
+  border-color: #4ade80;
+  background: color-mix(in srgb, #22c55e 14%, var(--workflow-pill-bg, #1a2330));
 }
 
 .site-job-workflow__form-title {
-  text-align: center;
+  text-align: left;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-  margin: 0.5rem 0 1rem;
-  font-size: 0.95rem;
+  text-transform: none;
+  letter-spacing: -0.02em;
+  margin: 0.25rem 0 1rem;
+  font-size: 1.05rem;
+  color: var(--text);
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border-strong);
 }
 
 .site-job-workflow__paper-table {
   width: 100%;
-  border-collapse: collapse;
-  border: 2px solid var(--border-strong, #111);
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--workflow-table-border, var(--border-strong));
+  border-radius: 12px;
+  overflow: hidden;
   margin-bottom: 1rem;
-  background: var(--surface, #fff);
+  background: var(--surface);
+  box-shadow: 0 1px 3px var(--workflow-scroll-hint);
 }
 
 .site-job-workflow__paper-table th,
 .site-job-workflow__paper-table td {
-  border: 1px solid var(--border-strong, #111);
-  padding: 0.25rem 0.35rem;
+  border: none;
+  border-bottom: 1px solid var(--workflow-table-border, var(--border-strong));
+  border-right: 1px solid var(--workflow-table-border, var(--border-strong));
+  padding: 0.4rem 0.5rem;
   vertical-align: middle;
 }
 
+.site-job-workflow__paper-table th:last-child,
+.site-job-workflow__paper-table td:last-child {
+  border-right: none;
+}
+
+.site-job-workflow__paper-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
 .site-job-workflow__paper-table thead th {
-  background: #f1f3f5;
+  background: var(--workflow-table-head, #f1f3f5);
   font-weight: 600;
   font-size: 0.72rem;
   text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.site-job-workflow__paper-table tbody tr:nth-child(even) td {
+  background: var(--workflow-table-row-alt, transparent);
 }
 
 .site-job-workflow__paper-table input,
@@ -118,8 +187,9 @@ button.site-job-workflow__step-pill {
   width: 100%;
   border: none;
   background: transparent;
-  font-size: 0.8rem;
-  padding: 0.15rem;
+  font-size: 0.85rem;
+  padding: 0.2rem 0.25rem;
+  color: var(--text);
 }
 
 .site-job-workflow__paper-table textarea {
@@ -128,22 +198,24 @@ button.site-job-workflow__step-pill {
 }
 
 .site-job-workflow__category-row td {
-  background: #e9ecef;
+  background: var(--surface-muted);
   font-weight: 700;
   text-transform: uppercase;
-  font-size: 0.75rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
 }
 
 .site-job-workflow__month-banner {
-  background: #e7f1ff;
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
   font-size: 0.78rem;
   font-weight: 700;
   text-transform: none;
   letter-spacing: 0.02em;
+  color: var(--brand-title);
 }
 
 .site-job-workflow__day-cell {
-  /* Wide enough for letter + native select chevron (narrow cells looked like “arrows only”). */
   min-width: 3.1rem;
   width: 3.1rem;
   max-width: 3.35rem;
@@ -162,13 +234,13 @@ button.site-job-workflow__step-pill {
 }
 
 .site-job-workflow__paper-table .site-job-workflow__day-check {
-  width: 1.05rem;
-  height: 1.05rem;
+  width: 1.1rem;
+  height: 1.1rem;
   max-width: none;
   margin: 0 auto;
   display: block;
   cursor: pointer;
-  accent-color: #0d6efd;
+  accent-color: var(--accent);
 }
 
 .site-job-workflow__day-cell input {
@@ -180,22 +252,30 @@ button.site-job-workflow__step-pill {
 .site-job-workflow__nav-footer {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 0.65rem;
   justify-content: space-between;
   align-items: center;
-  margin-top: 1.25rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--border-strong, #dee2e6);
+  margin-top: 1.5rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--border-strong);
 }
 
 .site-job-workflow__scroll {
   overflow-x: auto;
   margin-bottom: 0.5rem;
+  border-radius: 12px;
+  position: relative;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.site-job-workflow__scroll:focus-within {
+  outline: none;
 }
 
 .site-job-workflow__dense-table th,
 .site-job-workflow__dense-table td {
-  font-size: 0.72rem;
+  font-size: 0.74rem;
   white-space: nowrap;
 }
 
@@ -208,7 +288,7 @@ button.site-job-workflow__step-pill {
 }
 
 .site-job-workflow__att-status-tabs .btn {
-  font-size: 0.72rem;
+  font-size: 0.78rem;
 }
 
 .site-job-workflow__status-badge {
@@ -236,87 +316,179 @@ button.site-job-workflow__step-pill {
   color: #842029;
 }
 
-/* ---- Responsive (client: mobile-friendly workflow) ---- */
+html[data-theme="dark"] .site-job-workflow__status-badge--pending {
+  background: rgba(234, 179, 8, 0.2);
+  color: #fde047;
+}
+
+html[data-theme="dark"] .site-job-workflow__status-badge--approved {
+  background: rgba(34, 197, 94, 0.18);
+  color: #86efac;
+}
+
+html[data-theme="dark"] .site-job-workflow__status-badge--rejected {
+  background: rgba(248, 113, 113, 0.15);
+  color: #fca5a5;
+}
+
+/* ---- Mobile: stack labeled rows (needs data-label on td) ---- */
+@media (max-width: 767.98px) {
+  .site-job-workflow__stack-mobile.site-job-workflow__paper-table {
+    border-radius: 14px;
+  }
+
+  .site-job-workflow__stack-mobile.site-job-workflow__paper-table thead {
+    display: none;
+  }
+
+  .site-job-workflow__stack-mobile.site-job-workflow__paper-table tbody tr {
+    display: block;
+    margin-bottom: 0.85rem;
+    border: 1px solid var(--workflow-table-border, var(--border-strong));
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--surface);
+    box-shadow: 0 2px 8px var(--workflow-scroll-hint);
+  }
+
+  .site-job-workflow__stack-mobile.site-job-workflow__paper-table tbody tr:nth-child(even) td {
+    background: transparent;
+  }
+
+  .site-job-workflow__stack-mobile.site-job-workflow__paper-table td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    width: 100% !important;
+    border: none !important;
+    border-bottom: 1px solid var(--border-strong) !important;
+    border-right: none !important;
+    padding: 0.55rem 0.75rem !important;
+    text-align: right !important;
+    white-space: normal !important;
+  }
+
+  .site-job-workflow__stack-mobile.site-job-workflow__paper-table td:last-child {
+    border-bottom: none !important;
+  }
+
+  .site-job-workflow__stack-mobile.site-job-workflow__paper-table td[data-label]::before {
+    content: attr(data-label);
+    font-weight: 600;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-secondary);
+    text-align: left;
+    flex: 0 0 38%;
+    max-width: 46%;
+    line-height: 1.3;
+  }
+
+  .site-job-workflow__stack-mobile.site-job-workflow__paper-table td[data-label=""]::before,
+  .site-job-workflow__stack-mobile.site-job-workflow__paper-table td:not([data-label])::before {
+    display: none;
+  }
+
+  .site-job-workflow__stack-mobile.site-job-workflow__paper-table td[data-label=""] {
+    justify-content: center;
+  }
+
+  .site-job-workflow__stack-mobile.site-job-workflow__paper-table td > input,
+  .site-job-workflow__stack-mobile.site-job-workflow__paper-table td > select,
+  .site-job-workflow__stack-mobile.site-job-workflow__paper-table td .form-select {
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: right;
+  }
+
+  .site-job-workflow__stack-mobile.site-job-workflow__paper-table td.site-job-workflow__day-cell {
+    min-width: 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+  }
+
+  .site-job-workflow__stack-mobile.site-job-workflow__paper-table .btn {
+    width: auto;
+    min-height: 40px;
+    padding-inline: 1rem;
+  }
+}
+
+/* ---- Responsive ---- */
 @media (max-width: 991.98px) {
   .dashboard-section.site-job-workflow {
-    padding: 1rem 0.85rem;
+    padding: 1.1rem 1rem;
   }
 }
 
 @media (max-width: 767.98px) {
   .dashboard-section.site-job-workflow {
-    padding: 0.75rem 0.65rem;
-    border-radius: 12px;
+    padding: 1rem 0.85rem;
+    border-radius: 16px;
   }
 
   .site-job-workflow__header {
     flex-direction: column;
     align-items: stretch;
-    gap: 0.75rem;
+    gap: 0.85rem;
   }
 
   .site-job-workflow__job-box {
-    align-self: center;
-    min-width: 0;
+    align-self: stretch;
+    max-width: none;
     width: 100%;
-    max-width: 12rem;
   }
 
   .site-job-workflow__form-title {
-    font-size: 0.82rem;
-    line-height: 1.35;
-    margin-left: 0;
-    margin-right: 0;
-    padding: 0 0.15rem;
+    font-size: 1rem;
   }
 
-  /* Step pills: horizontal swipe (avoids huge wrapped grid on phone) */
   .site-job-workflow__stepper {
     flex-wrap: nowrap;
     overflow-x: auto;
     overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
     scroll-snap-type: x proximity;
-    gap: 0.4rem;
-    padding: 0.2rem 0 0.65rem;
-    margin-inline: -0.15rem;
+    gap: 0.45rem;
+    padding: 0.15rem 0 0.75rem;
+    margin-inline: -0.2rem;
+    padding-inline: 0.2rem;
     scrollbar-width: thin;
+    mask-image: linear-gradient(to right, transparent, #000 12px, #000 calc(100% - 12px), transparent);
   }
 
   .site-job-workflow__step-pill {
     flex: 0 0 auto;
     scroll-snap-align: start;
-    min-width: 8.25rem;
-    max-width: 11.5rem;
-    font-size: 0.68rem;
-    padding: 0.38rem 0.5rem;
+    min-width: 9rem;
+    max-width: 12rem;
+    font-size: 0.72rem;
+    padding: 0.5rem 0.6rem;
     white-space: normal;
-    line-height: 1.25;
+    line-height: 1.3;
   }
 
   .site-job-workflow__scroll {
     -webkit-overflow-scrolling: touch;
     overscroll-behavior-x: contain;
-    margin-inline: -0.25rem;
-    padding-inline: 0.25rem;
-    border-radius: 8px;
-    border: 1px solid var(--border-strong, #dee2e6);
-    background: var(--surface-muted, #f1f3f5);
+    margin-inline: -0.15rem;
+    padding-inline: 0.15rem;
+    border: 1px solid var(--border-strong);
+    background: var(--surface-muted);
+    border-radius: 12px;
   }
 
-  .site-job-workflow__paper-table {
-    font-size: 0.78rem;
-  }
-
-  .site-job-workflow__paper-table th,
-  .site-job-workflow__paper-table td {
-    padding: 0.2rem 0.28rem;
+  .site-job-workflow__dense-table th,
+  .site-job-workflow__dense-table td {
+    white-space: nowrap;
   }
 
   .site-job-workflow__nav-footer {
     flex-direction: column;
     align-items: stretch;
-    gap: 0.65rem;
+    gap: 0.75rem;
   }
 
   .site-job-workflow__nav-actions {
@@ -327,6 +499,7 @@ button.site-job-workflow__step-pill {
   .site-job-workflow__nav-footer .btn,
   .site-job-workflow__nav-actions .btn {
     width: 100%;
+    min-height: 44px;
   }
 
   .site-job-workflow__att-status-tabs {
@@ -358,8 +531,8 @@ button.site-job-workflow__step-pill {
 
 @media (max-width: 575.98px) {
   .site-job-workflow__step-pill {
-    min-width: 7.5rem;
-    font-size: 0.65rem;
+    min-width: 8rem;
+    font-size: 0.68rem;
   }
 
   .site-job-workflow__dense-table th,

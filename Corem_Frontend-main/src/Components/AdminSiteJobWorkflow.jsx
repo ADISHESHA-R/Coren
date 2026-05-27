@@ -61,6 +61,49 @@ function normalizeRegisterCellCodeForUi(raw) {
   return "";
 }
 
+/** Dimensional details: numeric value + unit (stored separately). */
+const DIMENSION_UNITS = ["mm", "cm", "dm", "m", "km"];
+
+function parseLegacyDimensionString(dim) {
+  const str = String(dim ?? "").trim();
+  if (!str) return { dimensionValue: "", dimensionUnit: "mm" };
+  const sortedUnits = [...DIMENSION_UNITS].sort((a, b) => b.length - a.length);
+  let dimensionUnit = "mm";
+  let rest = str;
+  for (const u of sortedUnits) {
+    const re = new RegExp(`\\s*${u}\\s*$`, "i");
+    if (re.test(rest)) {
+      dimensionUnit = u;
+      rest = rest.replace(re, "").trim();
+      break;
+    }
+  }
+  const numMatch = rest.match(/\d+/);
+  const dimensionValue = numMatch ? numMatch[0] : "";
+  return { dimensionValue, dimensionUnit };
+}
+
+function sanitizeDimensionIntegerInput(raw) {
+  return String(raw ?? "").replace(/\D/g, "");
+}
+
+/** Tool checklist row date: `type="date"` needs YYYY-MM-DD; migrate common legacy patterns. */
+function coerceToolItemDateToIsoInput(raw) {
+  const s = String(raw ?? "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const m = s.match(/^(\d{1,2})[./](\d{1,2})[./](\d{2,4})$/);
+  if (!m) return "";
+  const d = Number(m[1]);
+  const mo = Number(m[2]);
+  let y = Number(m[3]);
+  if (!Number.isFinite(d) || !Number.isFinite(mo) || !Number.isFinite(y)) return "";
+  if (y < 100) y += y >= 70 ? 1900 : 2000;
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return "";
+  const dt = new Date(y, mo - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return "";
+  return `${String(y).padStart(4, "0")}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
 /** Page size for GET /api/admin/users (User Management directory). */
 const USER_DIRECTORY_PAGE_SIZE = 500;
 
@@ -71,6 +114,29 @@ const TOOL_ISSUE_CELL_FIELDS_BEFORE = [
   ["damageDate", "date"],
   ["repairDate", "date"],
 ];
+
+/** `data-label` for mobile stacked rows (advance expense line, same order as field tuples). */
+const ADVANCE_EXPENSE_COLUMN_LABELS = [
+  "Adv. date",
+  "Opening bal.",
+  "Amount",
+  "Food",
+  "Convey.",
+  "Medical",
+  "Add. manpower",
+  "Welding",
+  "Site exp.",
+  "Bal. in hand",
+  "Dispersion / notes",
+];
+
+const TOOL_ISSUE_FIELD_LABELS = {
+  packingListSlNo: "Pkg list Sl.",
+  itemDescription: "Item description",
+  missingDate: "Missing date",
+  damageDate: "Damage date",
+  repairDate: "Repair date",
+};
 
 /** Head indices for user-added challenge rows (not in catalog); avoids clashing with API head indexes. */
 function nextSupplementalChallengeHeadIndex(rows) {
@@ -144,7 +210,8 @@ function emptyIntroFromSite(site) {
     dimensionalRows: Array.from({ length: 5 }, (_, i) => ({
       slNo: i + 1,
       activity: "Machining of stay ring surfaces",
-      dimensions: "",
+      dimensionValue: "",
+      dimensionUnit: "mm",
       description: "",
     })),
     mobilization: [
@@ -176,14 +243,27 @@ function normalizeProjectIntroduction(intro) {
 
   let dr = Array.isArray(intro.dimensionalRows) ? intro.dimensionalRows : [];
   if (dr.length === 0) {
-    dr = [{ slNo: 1, activity: "Machining of stay ring surfaces", dimensions: "", description: "" }];
+    dr = [{ slNo: 1, activity: "Machining of stay ring surfaces", dimensionValue: "", dimensionUnit: "mm", description: "" }];
   }
-  dr = dr.map((r, i) => ({
-    slNo: i + 1,
-    activity: r?.activity ?? "Machining of stay ring surfaces",
-    dimensions: r?.dimensions ?? "",
-    description: r?.description ?? "",
-  }));
+  dr = dr.map((r, i) => {
+    let dimensionValue =
+      r?.dimensionValue != null ? sanitizeDimensionIntegerInput(String(r.dimensionValue)) : "";
+    let dimensionUnit = String(r?.dimensionUnit ?? "mm").toLowerCase();
+    if (!DIMENSION_UNITS.includes(dimensionUnit)) dimensionUnit = "mm";
+    const legacyDim = r?.dimensions != null ? String(r.dimensions) : "";
+    if (!dimensionValue && legacyDim.trim()) {
+      const parsed = parseLegacyDimensionString(legacyDim);
+      dimensionValue = parsed.dimensionValue;
+      dimensionUnit = parsed.dimensionUnit;
+    }
+    return {
+      slNo: i + 1,
+      activity: r?.activity ?? "Machining of stay ring surfaces",
+      dimensionValue,
+      dimensionUnit,
+      description: r?.description ?? "",
+    };
+  });
 
   let mob = Array.isArray(intro.mobilization) ? intro.mobilization : [];
   if (mob.length === 0) {
@@ -960,7 +1040,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
           </table>
           <h4 className="h6 fw-bold">Proposed equipment</h4>
           <div className="site-job-workflow__scroll">
-            <table className="site-job-workflow__paper-table">
+            <table className="site-job-workflow__paper-table site-job-workflow__stack-mobile">
               <thead>
                 <tr>
                   <th style={{ width: "3rem" }}>Sl.</th>
@@ -973,8 +1053,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               <tbody>
                 {intro.proposedEquipment?.map((row, idx) => (
                   <tr key={`pe-${idx}`}>
-                    <td>{idx + 1}</td>
-                    <td>
+                    <td data-label="Sl.">{idx + 1}</td>
+                    <td data-label="Description">
                       <input
                         value={row.text}
                         onChange={(e) => {
@@ -984,7 +1064,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                         }}
                       />
                     </td>
-                    <td className="text-center">
+                    <td data-label="" className="text-center">
                       <button
                         type="button"
                         className="btn btn-outline-danger btn-sm py-0 px-2"
@@ -1028,12 +1108,13 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
           />
           <h4 className="h6 fw-bold">Dimensional details</h4>
           <div className="site-job-workflow__scroll">
-            <table className="site-job-workflow__paper-table">
+            <table className="site-job-workflow__paper-table site-job-workflow__stack-mobile">
               <thead>
                 <tr>
                   <th>Sl. No</th>
                   <th>Activity</th>
-                  <th>Dimensions</th>
+                  <th>Dimension (integer)</th>
+                  <th>Unit</th>
                   <th>Description</th>
                   <th style={{ width: "5.5rem" }} className="text-center">
                     Remove
@@ -1043,8 +1124,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               <tbody>
                 {intro.dimensionalRows?.map((row, idx) => (
                   <tr key={`dim-${idx}`}>
-                    <td>{idx + 1}</td>
-                    <td>
+                    <td data-label="Sl. No">{idx + 1}</td>
+                    <td data-label="Activity">
                       <input
                         value={row.activity}
                         onChange={(e) => {
@@ -1054,17 +1135,39 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                         }}
                       />
                     </td>
-                    <td>
+                    <td data-label="Dimension">
                       <input
-                        value={row.dimensions}
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        autoComplete="off"
+                        placeholder="e.g. 120"
+                        value={row.dimensionValue ?? ""}
                         onChange={(e) => {
                           const next = [...(intro.dimensionalRows || [])];
-                          next[idx] = { ...row, dimensions: e.target.value };
+                          next[idx] = { ...row, dimensionValue: sanitizeDimensionIntegerInput(e.target.value) };
                           updateWizard({ projectIntroduction: { ...intro, dimensionalRows: next } });
                         }}
                       />
                     </td>
-                    <td>
+                    <td data-label="Unit">
+                      <select
+                        className="form-select form-select-sm"
+                        value={DIMENSION_UNITS.includes(String(row.dimensionUnit ?? "").toLowerCase()) ? String(row.dimensionUnit).toLowerCase() : "mm"}
+                        onChange={(e) => {
+                          const next = [...(intro.dimensionalRows || [])];
+                          next[idx] = { ...row, dimensionUnit: e.target.value };
+                          updateWizard({ projectIntroduction: { ...intro, dimensionalRows: next } });
+                        }}
+                      >
+                        {DIMENSION_UNITS.map((u) => (
+                          <option key={u} value={u}>
+                            {u}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td data-label="Description">
                       <input
                         value={row.description}
                         onChange={(e) => {
@@ -1074,7 +1177,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                         }}
                       />
                     </td>
-                    <td className="text-center">
+                    <td data-label="" className="text-center">
                       <button
                         type="button"
                         className="btn btn-outline-danger btn-sm py-0 px-2"
@@ -1105,7 +1208,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               dr.push({
                 slNo: dr.length + 1,
                 activity: "Machining of stay ring surfaces",
-                dimensions: "",
+                dimensionValue: "",
+                dimensionUnit: "mm",
                 description: "",
               });
               updateWizard({
@@ -1119,7 +1223,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
             <div className="col-md-6">
               <h4 className="h6 fw-bold">Mobilization schedule</h4>
               <div className="site-job-workflow__scroll">
-                <table className="site-job-workflow__paper-table">
+                <table className="site-job-workflow__paper-table site-job-workflow__stack-mobile">
                   <thead>
                     <tr>
                       <th>Sl.</th>
@@ -1133,8 +1237,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                   <tbody>
                     {intro.mobilization?.map((row, idx) => (
                       <tr key={`mob-${idx}`}>
-                        <td>{String(idx + 1).padStart(2, "0")}</td>
-                        <td>
+                        <td data-label="Sl.">{String(idx + 1).padStart(2, "0")}</td>
+                        <td data-label="Activity">
                           <input
                             value={row.activity}
                             onChange={(e) => {
@@ -1144,7 +1248,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                             }}
                           />
                         </td>
-                        <td>
+                        <td data-label="Date">
                           <input
                             type="date"
                             value={row.date}
@@ -1155,7 +1259,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                             }}
                           />
                         </td>
-                        <td className="text-center">
+                        <td data-label="" className="text-center">
                           <button
                             type="button"
                             className="btn btn-outline-danger btn-sm py-0 px-2"
@@ -1198,7 +1302,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                 Pick a user from the directory (same users as User Management, up to {USER_DIRECTORY_PAGE_SIZE} loaded), or choose Unlink to type a custom name.
               </p>
               <div className="site-job-workflow__scroll">
-                <table className="site-job-workflow__paper-table">
+                <table className="site-job-workflow__paper-table site-job-workflow__stack-mobile">
                   <thead>
                     <tr>
                       <th>Sl.</th>
@@ -1211,8 +1315,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                   <tbody>
                     {intro.teamMembers?.map((row, idx) => (
                       <tr key={`tm-${idx}`}>
-                        <td>{String(idx + 1).padStart(2, "0")}</td>
-                        <td>
+                        <td data-label="Sl.">{String(idx + 1).padStart(2, "0")}</td>
+                        <td data-label="Member">
                           <UserDirectoryCombobox
                             compact
                             options={employeeOptions}
@@ -1268,7 +1372,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                             </button>
                           ) : null}
                         </td>
-                        <td className="text-center">
+                        <td data-label="" className="text-center">
                           <button
                             type="button"
                             className="btn btn-outline-danger btn-sm py-0 px-2"
@@ -1335,7 +1439,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
             </div>
           </div>
           <div className="site-job-workflow__scroll">
-            <table className="site-job-workflow__paper-table">
+            <table className="site-job-workflow__paper-table site-job-workflow__stack-mobile">
               <thead>
                 <tr>
                   <th>Sl.No.</th>
@@ -1352,8 +1456,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               <tbody>
                 {(eng.rows || []).map((row, idx) => (
                   <tr key={`eng-row-${idx}`}>
-                    <td>{idx + 1}</td>
-                    <td>
+                    <td data-label="Sl.No.">{idx + 1}</td>
+                    <td data-label="Activity">
                       <input
                         value={row.activity}
                         onChange={(e) => {
@@ -1363,7 +1467,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                         }}
                       />
                     </td>
-                    <td>
+                    <td data-label="Day">
                       <input
                         value={row.day}
                         onChange={(e) => {
@@ -1373,7 +1477,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                         }}
                       />
                     </td>
-                    <td>
+                    <td data-label="Target time">
                       <input
                         value={row.targetTime}
                         onChange={(e) => {
@@ -1383,7 +1487,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                         }}
                       />
                     </td>
-                    <td>
+                    <td data-label="Actual time">
                       <input
                         value={row.actualTime}
                         onChange={(e) => {
@@ -1393,7 +1497,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                         }}
                       />
                     </td>
-                    <td>
+                    <td data-label="Reason for delay">
                       <input
                         value={row.reasonDelay}
                         onChange={(e) => {
@@ -1403,7 +1507,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                         }}
                       />
                     </td>
-                    <td className="text-center">
+                    <td data-label="" className="text-center">
                       <button
                         type="button"
                         className="btn btn-outline-danger btn-sm py-0 px-2"
@@ -1479,7 +1583,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
             </button>
           </div>
           <p className="site-job-workflow__muted small mb-3">
-            Tick the checkbox for a day when the item was <strong>physically available on site</strong>. Use the Date column for a note such as an inspection date (optional).
+            Tick the checkbox for a day when the item was <strong>physically available on site</strong>. Use the Date column to pick an inspection or calibration date from the calendar (optional).
           </p>
           {(() => {
             const toolsMonthHeading =
@@ -1500,7 +1604,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                   </table>
                 </div>
                 <div className="site-job-workflow__scroll">
-                  <table className="site-job-workflow__paper-table">
+                  <table className="site-job-workflow__paper-table site-job-workflow__stack-mobile">
                     <thead>
                       <tr>
                         <th colSpan={5} />
@@ -1524,8 +1628,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                     <tbody>
                       {cat.items?.map((item, ii) => (
                         <tr key={`${cat.key}-${ii}`}>
-                          <td>{ii + 1}</td>
-                          <td>
+                          <td data-label="Sl.">{ii + 1}</td>
+                          <td data-label="Item description">
                             <input
                               value={item.description}
                               onChange={(e) => {
@@ -1537,7 +1641,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                               }}
                             />
                           </td>
-                          <td>
+                          <td data-label="UOM">
                             <input
                               value={item.uom}
                               onChange={(e) => {
@@ -1549,7 +1653,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                               }}
                             />
                           </td>
-                          <td>
+                          <td data-label="Qty">
                             <input
                               value={item.qty}
                               onChange={(e) => {
@@ -1561,10 +1665,11 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                               }}
                             />
                           </td>
-                          <td>
+                          <td data-label="Date">
                             <input
-                              value={item.itemDate ?? ""}
-                              placeholder="e.g. 22.09.24"
+                              type="date"
+                              className="form-control form-control-sm"
+                              value={coerceToolItemDateToIsoInput(item.itemDate)}
                               onChange={(e) => {
                                 const categories = [...(toolChecklist.categories || [])];
                                 const items = [...(categories[ci].items || [])];
@@ -1581,7 +1686,11 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                               const dayNum = calendarDayForCell(toolDayBlock, di);
                               const checked = String(mark ?? "").trim() === "✓";
                               return (
-                                <td key={`${cat.key}-${ii}-d-${globalIdx}`} className="site-job-workflow__day-cell">
+                                <td
+                                  key={`${cat.key}-${ii}-d-${globalIdx}`}
+                                  className="site-job-workflow__day-cell"
+                                  data-label={`Day ${String(dayNum).padStart(2, "0")} (${toolsMonthHeading})`}
+                                >
                                   <input
                                     type="checkbox"
                                     className="site-job-workflow__day-check"
@@ -1633,7 +1742,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
             machineryByCategory.map(([label, rows]) => (
               <div key={label} className="mb-2">
                 <div className="fw-bold small text-uppercase mb-1">{label}</div>
-                <table className="site-job-workflow__paper-table">
+                <table className="site-job-workflow__paper-table site-job-workflow__stack-mobile">
                   <thead>
                     <tr>
                       <th>Code</th>
@@ -1648,11 +1757,11 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                       const ck = getMachineryChecklistKey(m);
                       return (
                         <tr key={m.id}>
-                          <td>{m.code}</td>
-                          <td>{m.name}</td>
-                          <td>{m.defaultUom ?? "—"}</td>
-                          <td>{m.status ?? "—"}</td>
-                          <td>{ck ? `${ck} (${CHECKLIST_KEY_TO_LABEL[ck] ?? ck})` : "—"}</td>
+                          <td data-label="Code">{m.code}</td>
+                          <td data-label="Name">{m.name}</td>
+                          <td data-label="UOM">{m.defaultUom ?? "—"}</td>
+                          <td data-label="Status">{m.status ?? "—"}</td>
+                          <td data-label="Checklist">{ck ? `${ck} (${CHECKLIST_KEY_TO_LABEL[ck] ?? ck})` : "—"}</td>
                         </tr>
                       );
                     })}
@@ -1836,7 +1945,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
             </span>
           </div>
           <div className="site-job-workflow__scroll mb-4">
-            <table className="site-job-workflow__paper-table site-job-workflow__dense-table">
+            <table className="site-job-workflow__paper-table site-job-workflow__dense-table site-job-workflow__stack-mobile">
               <thead>
                 <tr>
                   <th>Sl.</th>
@@ -1856,7 +1965,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               <tbody>
                 {advanceLines.map((row, idx) => (
                   <tr key={`adv-${row.slNo}`}>
-                    <td>{row.slNo}</td>
+                    <td data-label="Sl.">{row.slNo}</td>
                     {[
                       ["dateAdvanceReceived", "date"],
                       ["openingBalance", "text"],
@@ -1869,8 +1978,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                       ["siteExpenses", "text"],
                       ["balanceInHand", "text"],
                       ["dispersionDetails", "text"],
-                    ].map(([field, typ]) => (
-                      <td key={field}>
+                    ].map(([field, typ], colIdx) => (
+                      <td key={field} data-label={ADVANCE_EXPENSE_COLUMN_LABELS[colIdx]}>
                         <input
                           type={typ === "date" ? "date" : "text"}
                           className="form-control form-control-sm border-0 rounded-0 px-1"
@@ -1927,7 +2036,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
             </span>
           </div>
           <div className="site-job-workflow__scroll mb-2">
-            <table className="site-job-workflow__paper-table site-job-workflow__dense-table">
+            <table className="site-job-workflow__paper-table site-job-workflow__dense-table site-job-workflow__stack-mobile">
               <thead>
                 <tr>
                   <th>Sl.</th>
@@ -1944,8 +2053,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               <tbody>
                 {technicianPaymentLines.map((row, ri) => (
                   <tr key={`tech-${row.slNo}`}>
-                    <td>{row.slNo}</td>
-                    <td style={{ minWidth: "12rem" }}>
+                    <td data-label="Sl.">{row.slNo}</td>
+                    <td data-label="Technician name" style={{ minWidth: "12rem" }}>
                       <UserDirectoryCombobox
                         compact
                         options={employeeOptions}
@@ -2006,7 +2115,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                     </td>
                     {row.payments.map((p, pi) => (
                       <Fragment key={`p-${ri}-${pi}`}>
-                        <td>
+                        <td data-label={`Pay ${pi + 1} date`}>
                           <input
                             type="date"
                             className="form-control form-control-sm border-0 rounded-0 px-0"
@@ -2023,7 +2132,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                             }}
                           />
                         </td>
-                        <td>
+                        <td data-label={`Pay ${pi + 1} amt`}>
                           <input
                             className="form-control form-control-sm border-0 rounded-0 px-1"
                             value={p.amount}
@@ -2041,7 +2150,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                         </td>
                       </Fragment>
                     ))}
-                    <td>
+                    <td data-label="Total">
                       <input
                         className="form-control form-control-sm border-0 rounded-0 px-1"
                         value={row.totalPayment ?? ""}
@@ -2099,7 +2208,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
             <span className="site-job-workflow__muted small">{toolIssueLines.length} row(s)</span>
           </div>
           <div className="site-job-workflow__scroll">
-            <table className="site-job-workflow__paper-table site-job-workflow__dense-table">
+            <table className="site-job-workflow__paper-table site-job-workflow__dense-table site-job-workflow__stack-mobile">
               <thead>
                 <tr>
                   <th>Sl.</th>
@@ -2115,9 +2224,9 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               <tbody>
                 {toolIssueLines.map((row, ri) => (
                   <tr key={`ti-${row.slNo}`}>
-                    <td>{row.slNo}</td>
+                    <td data-label="Sl.">{row.slNo}</td>
                     {TOOL_ISSUE_CELL_FIELDS_BEFORE.map(([field, typ]) => (
-                      <td key={field}>
+                      <td key={field} data-label={TOOL_ISSUE_FIELD_LABELS[field]}>
                         <input
                           type={typ === "date" ? "date" : "text"}
                           className="form-control form-control-sm border-0 rounded-0 px-1"
@@ -2133,7 +2242,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                         />
                       </td>
                     ))}
-                    <td style={{ minWidth: "11rem" }}>
+                    <td data-label="Handled by" style={{ minWidth: "11rem" }}>
                       <UserDirectoryCombobox
                         compact
                         options={employeeOptions}
@@ -2192,7 +2301,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                         </button>
                       ) : null}
                     </td>
-                    <td>
+                    <td data-label="Issue description">
                       <input
                         type="text"
                         className="form-control form-control-sm border-0 rounded-0 px-1"
@@ -2256,7 +2365,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
             </button>
           </div>
           <div className="site-job-workflow__scroll">
-            <table className="site-job-workflow__paper-table site-job-workflow__dense-table">
+            <table className="site-job-workflow__paper-table site-job-workflow__dense-table site-job-workflow__stack-mobile">
               <thead>
                 <tr>
                   <th>Sl.</th>
@@ -2271,8 +2380,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               <tbody>
                 {challengeLineRows.map((row, ri) => (
                   <tr key={`ch-${row.headIndex}-${ri}`}>
-                    <td>{row.headIndex || ri + 1}</td>
-                    <td className="small">
+                    <td data-label="Sl.">{row.headIndex || ri + 1}</td>
+                    <td data-label="Heads" className="small">
                       {row.workflowSupplemental ? (
                         <input
                           className="form-control form-control-sm border-0 rounded-0 px-1"
@@ -2290,7 +2399,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                         row.headLabel
                       )}
                     </td>
-                    <td>
+                    <td data-label="Date of incident">
                       <input
                         type="date"
                         className="form-control form-control-sm border-0 rounded-0 px-1"
@@ -2305,7 +2414,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                         }}
                       />
                     </td>
-                    <td style={{ minWidth: "11rem" }}>
+                    <td data-label="Involved" style={{ minWidth: "11rem" }}>
                       <UserDirectoryCombobox
                         compact
                         options={employeeOptions}
@@ -2365,10 +2474,10 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                       ) : null}
                     </td>
                     {[
-                      ["challengesFaced", "text"],
-                      ["resolutionStatus", "text"],
-                    ].map(([field, typ]) => (
-                      <td key={field}>
+                      ["challengesFaced", "text", "Challenges faced"],
+                      ["resolutionStatus", "text", "Resolved / pending / action"],
+                    ].map(([field, typ, label]) => (
+                      <td key={field} data-label={label}>
                         <input
                           type={typ === "date" ? "date" : "text"}
                           className="form-control form-control-sm border-0 rounded-0 px-1"
@@ -2384,7 +2493,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                         />
                       </td>
                     ))}
-                    <td className="text-end align-middle">
+                    <td data-label="" className="text-end align-middle">
                       {row.workflowSupplemental ? (
                         <button
                           type="button"
@@ -2431,7 +2540,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
             </span>
           </div>
           <div className="site-job-workflow__scroll mb-2">
-            <table className="site-job-workflow__paper-table site-job-workflow__dense-table">
+            <table className="site-job-workflow__paper-table site-job-workflow__dense-table site-job-workflow__stack-mobile">
               <thead>
                 <tr>
                   <th rowSpan={3} style={{ minWidth: "7rem", verticalAlign: "middle" }}>
@@ -2524,14 +2633,15 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               <tbody>
                 {BEHAVIOUR_ISSUE_ROWS.map((issue, ri) => (
                   <tr key={`bi-${issue.slNo}`}>
-                    <td className="small">
+                    <td className="small" data-label="Issue">
                       <strong>{String(issue.slNo).padStart(2, "0")}</strong> {issue.label}
                     </td>
                     {behaviourState.members.map((_, ci) => {
                       const cell = behaviourState.matrix[ri]?.[ci] ?? { checked: false, date: "" };
+                      const memberLabel = `Member ${ci + 1}`;
                       return (
                         <Fragment key={`cell-${ri}-${ci}`}>
-                          <td className="text-center">
+                          <td className="text-center" data-label={`${memberLabel} · tick`}>
                             <input
                               type="checkbox"
                               className="form-check-input m-0"
@@ -2546,7 +2656,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                               }}
                             />
                           </td>
-                          <td>
+                          <td data-label={`${memberLabel} · date`}>
                             <input
                               type="date"
                               className="form-control form-control-sm border-0 rounded-0 px-0"
@@ -2623,7 +2733,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
             ) : null}
             {!siteAttendanceLoading && filteredSiteAttendance.length > 0 ? (
               <div className="site-job-workflow__scroll">
-                <table className="site-job-workflow__paper-table site-job-workflow__dense-table mb-0">
+                <table className="site-job-workflow__paper-table site-job-workflow__dense-table site-job-workflow__stack-mobile mb-0">
                   <thead>
                     <tr>
                       <th>Photo</th>
@@ -2653,20 +2763,20 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                       const rej = (req.rejectionReason ?? "").trim();
                       return (
                         <tr key={String(req.id ?? req.attendanceId ?? attendanceRowDateYmd(req))}>
-                          <td className="align-middle">
+                          <td data-label="Photo" className="align-middle">
                             <AttendancePhotoThumb row={req} alt={`Attendance ${dateDisp}`} />
                           </td>
-                          <td>{dateDisp}</td>
-                          <td>
+                          <td data-label="Date">{dateDisp}</td>
+                          <td data-label="Employee">
                             {emp}
                             {eid ? ` (${eid})` : ""}
                           </td>
-                          <td>{shiftLabel}</td>
-                          <td>{siteName}</td>
-                          <td>
+                          <td data-label="Shift">{shiftLabel}</td>
+                          <td data-label="Site">{siteName}</td>
+                          <td data-label="Status">
                             <span className={badgeClass}>{st}</span>
                           </td>
-                          <td>
+                          <td data-label="Actions">
                             {st === "PENDING" ? (
                               <div className="d-flex gap-1 flex-wrap">
                                 <button
@@ -2829,7 +2939,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
             <p className="text-muted">No register data returned for this site.</p>
           ) : (
             <div className="site-job-workflow__scroll">
-              <table className="site-job-workflow__paper-table">
+              <table className="site-job-workflow__paper-table site-job-workflow__stack-mobile">
                 <thead>
                   <tr>
                     <th>Sl.</th>
@@ -2845,15 +2955,16 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                 <tbody>
                   {(attendanceRegister.rows || []).map((row, ri) => (
                     <tr key={row.employeeId ?? ri}>
-                      <td>{row.slNo ?? ri + 1}</td>
-                      <td>{row.employeeName}</td>
+                      <td data-label="Sl.">{row.slNo ?? ri + 1}</td>
+                      <td data-label="Name">{row.employeeName}</td>
                       {(row.dayCodes || []).map((code, di) => {
                         const date = attendanceRegister.dayDates?.[di];
                         const key = `${row.employeeId}|${date}`;
                         const rawDisplay = attendanceDirtyCells.has(key) ? attendanceDirtyCells.get(key) : code || "";
                         const display = normalizeRegisterCellCodeForUi(rawDisplay);
+                        const dayHeading = date?.slice?.(5) ?? date ?? `Day ${di + 1}`;
                         return (
-                          <td key={key} className="site-job-workflow__day-cell">
+                          <td key={key} className="site-job-workflow__day-cell" data-label={`Code ${dayHeading}`}>
                             <select
                               className="site-job-workflow__att-code-select"
                               aria-label={`Attendance code ${row.employeeName ?? row.employeeId} ${date ?? di}`}
@@ -2876,7 +2987,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                           </td>
                         );
                       })}
-                      <td className="text-end align-middle">
+                      <td data-label="" className="text-end align-middle">
                         {row._adHocAttendance ? (
                           <button
                             type="button"
