@@ -23,7 +23,7 @@ export default function UserDirectoryCombobox({
   options,
   value,
   onChange,
-  placeholder = "Select user…",
+  placeholder = "Select user...",
   ariaLabel = "Select user",
   compact = false,
   disabled = false,
