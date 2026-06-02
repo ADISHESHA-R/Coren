@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate, useSearchParams, matchPath } from "react-router-dom";
 
 import { refreshAccessToken } from "../utils/refreshAccessToken";
 import { API_BASE_URL as BASE_URL } from "../config/apiBaseUrl.js";
+import { buildSiteWorkflowPath, resolveSiteIdFromWorkflowSegment } from "../utils/adminSiteRoutes.js";
 import AdminMachineryPanel from "./AdminMachineryPanel";
 import AdminNoticesPanel from "./AdminNoticesPanel";
 import AdminSiteJobWorkflow from "./AdminSiteJobWorkflow";
@@ -83,6 +85,44 @@ function parsePagedContent(data) {
       ? rawPages
       : Math.max(1, Math.ceil((Number.isFinite(totalElements) ? totalElements : 0) / size));
   return { list, totalElements: Number.isFinite(totalElements) ? totalElements : list.length, totalPages };
+}
+
+/** Client-side filter for overview “Site-wise stats” list only. */
+function filterOverviewSiteStatsRows(rows, searchText, quickFilter) {
+  if (!Array.isArray(rows)) return [];
+  let out = rows;
+  const q = (searchText || "").trim().toLowerCase();
+  if (q) {
+    out = out.filter((s) => {
+      const name = String(s.siteName ?? "").toLowerCase();
+      const jc = String(s.jobCode ?? "").toLowerCase();
+      const inch = String(s.inChargeUserName ?? s.inChargeName ?? "").toLowerCase();
+      return name.includes(q) || jc.includes(q) || inch.includes(q);
+    });
+  }
+  if (quickFilter === "pending") out = out.filter((s) => Number(s.pendingApprovals ?? 0) > 0);
+  if (quickFilter === "today") out = out.filter((s) => Number(s.todayAttendanceCount ?? 0) > 0);
+  return out;
+}
+
+function pendingRowSearchBlob(req) {
+  const dateVal = req.date ?? req.attendanceDate;
+  let dateStr = "";
+  if (dateVal) {
+    dateStr = typeof dateVal === "string" ? dateVal.slice(0, 10) : new Date(dateVal).toISOString().slice(0, 10);
+  }
+  const employeeName = req.employeeName ?? req.user?.name ?? req.employee?.name ?? req.name ?? "";
+  const employeeId = req.employeeId ?? req.user?.employeeId ?? req.employee?.employeeId ?? "";
+  const siteName = req.site?.name ?? req.siteName ?? (req.siteId ? `Site ${req.siteId}` : "");
+  return [employeeName, employeeId, siteName, String(req.siteId ?? ""), dateStr].join(" ").toLowerCase();
+}
+
+/** Client-side filter for current page of pending list (narrows visible rows only). */
+function filterPendingListRowsLocal(rows, searchText) {
+  if (!Array.isArray(rows)) return [];
+  const q = (searchText || "").trim().toLowerCase();
+  if (!q) return rows;
+  return rows.filter((req) => pendingRowSearchBlob(req).includes(q));
 }
 
 /** Directory for site “In charge” dropdown (same API as User Management, first page). */
@@ -282,6 +322,10 @@ const ROLES = [{ value: "EMPLOYEE", label: "Employee" }, { value: "ADMIN", label
 const EMPLOYEE_STATUSES = ["ACTIVE", "INACTIVE", "SUSPENDED"];
 
 export default function AdminDashboard({ onLogout }) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
+
   const [view, setView] = useState("overview"); // 'overview' | 'users' | 'pending' | 'sites' | 'machinery' | 'notices' | 'siteWorkflow'
   const [workflowSiteId, setWorkflowSiteId] = useState(null);
   const [dashboardData, setDashboardData] = useState(null);
@@ -313,6 +357,11 @@ export default function AdminDashboard({ onLogout }) {
   const [pendingJobCodeFilter, setPendingJobCodeFilter] = useState("");
   const [pendingLoading, setPendingLoading] = useState(false);
   const [pendingError, setPendingError] = useState("");
+  /** Client-only: narrow overview “Site-wise stats” table (list view). */
+  const [overviewSiteStatsSearch, setOverviewSiteStatsSearch] = useState("");
+  const [overviewSiteStatsQuickFilter, setOverviewSiteStatsQuickFilter] = useState("");
+  /** Client-only: narrow pending table rows on the current API page. */
+  const [pendingListSearch, setPendingListSearch] = useState("");
   const [approvingId, setApprovingId] = useState(null);
   const [rejectModalId, setRejectModalId] = useState(null);
   const [rejectReason, setRejectReason] = useState("");
@@ -354,9 +403,84 @@ export default function AdminDashboard({ onLogout }) {
 
   const refreshTimeoutRef = useRef(null);
 
+  /** Keep tab + workflow state aligned with `/admin/...` URL (shareable; works on Render with SPA fallback). */
   useEffect(() => {
-    if (view !== "siteWorkflow") setWorkflowSiteId(null);
-  }, [view]);
+    const pathname = location.pathname || "";
+    const workflowMatch = matchPath(
+      { path: "/admin/sites/:siteKey/site-job-workflow", end: true },
+      pathname,
+    );
+    if (workflowMatch?.params?.siteKey) {
+      const rawKey = workflowMatch.params.siteKey;
+      const siteKey = decodeURIComponent(String(rawKey));
+      const id = resolveSiteIdFromWorkflowSegment(siteKey, sites, dashboardData?.siteStats);
+      if (id != null) {
+        setWorkflowSiteId(id);
+        setView("siteWorkflow");
+        return;
+      }
+      setWorkflowSiteId(null);
+      setView("siteWorkflow");
+      return;
+    }
+
+    setWorkflowSiteId(null);
+    const p = pathname.replace(/\/$/, "") || "/";
+    if (p === "/admin" || p === "/admin/dashboard") setView("overview");
+    else if (p === "/admin/pending") setView("pending");
+    else if (p === "/admin/users") setView("users");
+    else if (p === "/admin/sites") setView("sites");
+    else if (p === "/admin/machinery") setView("machinery");
+    else if (p === "/admin/notices") setView("notices");
+    else setView("overview");
+  }, [location.pathname, sites, dashboardData?.siteStats]);
+
+  const navigateToAdminView = useCallback(
+    (next) => {
+      const map = {
+        overview: "/admin/dashboard",
+        pending: "/admin/pending",
+        users: "/admin/users",
+        sites: "/admin/sites",
+        machinery: "/admin/machinery",
+        notices: "/admin/notices",
+      };
+      const path = map[next];
+      if (path) navigate(path);
+    },
+    [navigate],
+  );
+
+  const openSiteWorkflow = useCallback(
+    (siteRow, stepIndex0 = 0) => {
+      const path = buildSiteWorkflowPath(siteRow, stepIndex0);
+      if (path) navigate(path);
+    },
+    [navigate],
+  );
+
+  const urlStep1Based = useMemo(() => {
+    const raw = searchParams.get("step");
+    if (raw == null || raw === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 1 ? n : null;
+  }, [searchParams]);
+
+  const handleWorkflowStepIndexChange = useCallback(
+    (idx0) => {
+      const step1 = idx0 + 1;
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (step1 <= 1) next.delete("step");
+          else next.set("step", String(step1));
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
 
   const refreshSessionToken = useCallback(async () => {
     if (!localStorage.getItem("refreshToken")) return;
@@ -553,6 +677,11 @@ export default function AdminDashboard({ onLogout }) {
     if (view === "overview" && getAuthHeader()) fetchDashboard();
   }, [view, fetchDashboard]);
 
+  /** Deep-linked workflow: load dashboard site stats so URL segment can resolve before paginated sites load. */
+  useEffect(() => {
+    if (view === "siteWorkflow" && getAuthHeader() && !dashboardData && !dashboardLoading) fetchDashboard();
+  }, [view, fetchDashboard, dashboardData, dashboardLoading]);
+
   useEffect(() => {
     if (view === "users" && getAuthHeader()) fetchUsers();
   }, [view, fetchUsers]);
@@ -562,7 +691,7 @@ export default function AdminDashboard({ onLogout }) {
   }, [view, fetchPendingRequests]);
 
   useEffect(() => {
-    if (view === "sites" && getAuthHeader()) fetchSites();
+    if ((view === "sites" || view === "siteWorkflow") && getAuthHeader()) fetchSites();
   }, [view, fetchSites]);
 
   useEffect(() => {
@@ -1014,27 +1143,37 @@ export default function AdminDashboard({ onLogout }) {
     setSitesPage(0);
   };
 
+  const filteredOverviewSiteStats = useMemo(
+    () => filterOverviewSiteStatsRows(dashboardData?.siteStats, overviewSiteStatsSearch, overviewSiteStatsQuickFilter),
+    [dashboardData?.siteStats, overviewSiteStatsSearch, overviewSiteStatsQuickFilter],
+  );
+
+  const filteredPendingListRows = useMemo(
+    () => filterPendingListRowsLocal(pendingRequests, pendingListSearch),
+    [pendingRequests, pendingListSearch],
+  );
+
   return (
     <div
       className={`admin-dashboard${view === "machinery" || view === "notices" || view === "siteWorkflow" ? " admin-dashboard--wide" : ""}${view === "siteWorkflow" ? " admin-dashboard--workflow" : ""}`}
     >
       <nav className="admin-nav">
-        <button type="button" className={`admin-nav-btn ${view === "overview" ? "active" : ""}`} onClick={() => setView("overview")}>
+        <button type="button" className={`admin-nav-btn ${view === "overview" ? "active" : ""}`} onClick={() => navigateToAdminView("overview")}>
           Dashboard
         </button>
-        <button type="button" className={`admin-nav-btn ${view === "pending" ? "active" : ""}`} onClick={() => setView("pending")}>
+        <button type="button" className={`admin-nav-btn ${view === "pending" ? "active" : ""}`} onClick={() => navigateToAdminView("pending")}>
           Pending Approvals
         </button>
-        <button type="button" className={`admin-nav-btn ${view === "users" ? "active" : ""}`} onClick={() => setView("users")}>
+        <button type="button" className={`admin-nav-btn ${view === "users" ? "active" : ""}`} onClick={() => navigateToAdminView("users")}>
           User Management
         </button>
-        <button type="button" className={`admin-nav-btn ${view === "sites" ? "active" : ""}`} onClick={() => setView("sites")}>
+        <button type="button" className={`admin-nav-btn ${view === "sites" ? "active" : ""}`} onClick={() => navigateToAdminView("sites")}>
           Sites
         </button>
-        <button type="button" className={`admin-nav-btn ${view === "machinery" ? "active" : ""}`} onClick={() => setView("machinery")}>
+        <button type="button" className={`admin-nav-btn ${view === "machinery" ? "active" : ""}`} onClick={() => navigateToAdminView("machinery")}>
           Machinery
         </button>
-        <button type="button" className={`admin-nav-btn ${view === "notices" ? "active" : ""}`} onClick={() => setView("notices")}>
+        <button type="button" className={`admin-nav-btn ${view === "notices" ? "active" : ""}`} onClick={() => navigateToAdminView("notices")}>
           Notices
         </button>
       </nav>
@@ -1049,11 +1188,29 @@ export default function AdminDashboard({ onLogout }) {
         <AdminSiteJobWorkflow
           siteId={workflowSiteId}
           showSuccess={showSuccess}
-          onExit={() => {
-            setView("overview");
-            setWorkflowSiteId(null);
-          }}
+          urlStep1Based={urlStep1Based}
+          onStepIndexChange={handleWorkflowStepIndexChange}
+          onExit={() => navigate("/admin/dashboard")}
+          onNavigateSitesList={() => navigate("/admin/sites")}
         />
+      )}
+
+      {view === "siteWorkflow" && workflowSiteId == null && sitesLoading && (
+        <section className="dashboard-section">
+          <p className="text-muted mb-0">Loading site…</p>
+        </section>
+      )}
+
+      {view === "siteWorkflow" && workflowSiteId == null && !sitesLoading && (
+        <section className="dashboard-section">
+          <div className="alert alert-warning py-2 mb-0">
+            This site link is invalid or the site is not in the current list. Use{" "}
+            <button type="button" className="btn btn-link p-0 align-baseline" onClick={() => navigateToAdminView("sites")}>
+              Sites
+            </button>{" "}
+            to open a site from the list.
+          </div>
+        </section>
       )}
 
       {view === "overview" && (
@@ -1077,7 +1234,7 @@ export default function AdminDashboard({ onLogout }) {
                 <button
                   type="button"
                   className="admin-stat-card admin-stat-card--clickable"
-                  onClick={() => setView("pending")}
+                  onClick={() => navigateToAdminView("pending")}
                   aria-label="View pending approval requests"
                 >
                   <span className="admin-stat-value">{dashboardData.pendingApprovals ?? 0}</span>
@@ -1095,6 +1252,50 @@ export default function AdminDashboard({ onLogout }) {
               {dashboardData.siteStats && dashboardData.siteStats.length > 0 && (
                 <div className="admin-site-stats mt-3">
                   <h3 className="h6 mb-2">Site-wise stats</h3>
+                  <p className="small text-muted mb-2">
+                    Search and quick filters apply only to this table (client-side). They do not change the summary cards above.
+                  </p>
+                  <div className="row g-2 align-items-end mb-2">
+                    <div className="col-12 col-md-5 col-lg-4">
+                      <label className="form-label small mb-0" htmlFor="overview-site-stats-search">
+                        Search this list
+                      </label>
+                      <input
+                        id="overview-site-stats-search"
+                        type="search"
+                        className="form-control form-control-sm"
+                        placeholder="Site name, job code, in charge…"
+                        value={overviewSiteStatsSearch}
+                        onChange={(e) => setOverviewSiteStatsSearch(e.target.value)}
+                      />
+                    </div>
+                    <div className="col-12 col-md-7 col-lg-8">
+                      <span className="form-label small mb-0 d-block">Quick filter</span>
+                      <div className="btn-group btn-group-sm flex-wrap" role="group" aria-label="Site stats quick filter">
+                        <button
+                          type="button"
+                          className={`btn ${overviewSiteStatsQuickFilter === "" ? "btn-primary" : "btn-outline-primary"}`}
+                          onClick={() => setOverviewSiteStatsQuickFilter("")}
+                        >
+                          All rows
+                        </button>
+                        <button
+                          type="button"
+                          className={`btn ${overviewSiteStatsQuickFilter === "pending" ? "btn-primary" : "btn-outline-primary"}`}
+                          onClick={() => setOverviewSiteStatsQuickFilter("pending")}
+                        >
+                          Has pending
+                        </button>
+                        <button
+                          type="button"
+                          className={`btn ${overviewSiteStatsQuickFilter === "today" ? "btn-primary" : "btn-outline-primary"}`}
+                          onClick={() => setOverviewSiteStatsQuickFilter("today")}
+                        >
+                          Today attendance
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                   <div className="table-responsive">
                     <table className="table table-bordered table-sm">
                       <thead>
@@ -1109,17 +1310,21 @@ export default function AdminDashboard({ onLogout }) {
                         </tr>
                       </thead>
                       <tbody>
-                        {dashboardData.siteStats.map((s) => (
+                        {filteredOverviewSiteStats.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} className="text-muted text-center small">
+                              No rows match this search/filter.
+                            </td>
+                          </tr>
+                        ) : (
+                          filteredOverviewSiteStats.map((s) => (
                           <tr key={s.siteId ?? s.siteName}>
                             <td>
                               {s.siteId != null ? (
                                 <button
                                   type="button"
                                   className="btn btn-link p-0 align-baseline text-start"
-                                  onClick={() => {
-                                    setWorkflowSiteId(s.siteId);
-                                    setView("siteWorkflow");
-                                  }}
+                                  onClick={() => openSiteWorkflow(s)}
                                 >
                                   {s.siteName ?? s.siteId}
                                 </button>
@@ -1132,10 +1337,7 @@ export default function AdminDashboard({ onLogout }) {
                                 <button
                                   type="button"
                                   className="btn btn-link p-0 align-baseline"
-                                  onClick={() => {
-                                    setWorkflowSiteId(s.siteId);
-                                    setView("siteWorkflow");
-                                  }}
+                                  onClick={() => openSiteWorkflow(s)}
                                 >
                                   {s.jobCode ?? "—"}
                                 </button>
@@ -1151,7 +1353,8 @@ export default function AdminDashboard({ onLogout }) {
                             <td>{s.approvedCount ?? 0}</td>
                             <td>{s.rejectedCount ?? 0}</td>
                           </tr>
-                        ))}
+                          ))
+                        )}
                       </tbody>
                     </table>
                   </div>
@@ -1165,7 +1368,9 @@ export default function AdminDashboard({ onLogout }) {
       {view === "pending" && (
         <section className="dashboard-section">
           <h2 className="section-title">Employee Requests Awaiting Approval</h2>
-          <p className="small text-muted mb-2">Filter by date, employee user ID, site ID, or job code. Results are paginated.</p>
+          <p className="small text-muted mb-2">
+            Filter by date, employee user ID, site ID, or job code (server). Use <strong>Search this list</strong> to narrow the current page by name, site, or date text.
+          </p>
           <div className="row g-2 align-items-end mb-3">
             <div className="col-6 col-md-4 col-lg-2">
               <label className="form-label small mb-0" htmlFor="pending-filter-date">
@@ -1218,6 +1423,19 @@ export default function AdminDashboard({ onLogout }) {
                 onChange={(e) => setPendingJobCodeFilter(e.target.value)}
               />
             </div>
+            <div className="col-12 col-md-6 col-lg-4">
+              <label className="form-label small mb-0" htmlFor="pending-list-search">
+                Search this list (current page)
+              </label>
+              <input
+                id="pending-list-search"
+                type="search"
+                className="form-control form-control-sm"
+                placeholder="Name, site, date…"
+                value={pendingListSearch}
+                onChange={(e) => setPendingListSearch(e.target.value)}
+              />
+            </div>
             <div className="col-12 col-md-4 col-lg-auto d-flex gap-2">
               <button
                 type="button"
@@ -1227,6 +1445,7 @@ export default function AdminDashboard({ onLogout }) {
                   setPendingEmployeeIdFilter("");
                   setPendingSiteIdFilter("");
                   setPendingJobCodeFilter("");
+                  setPendingListSearch("");
                   setPendingPage(0);
                 }}
               >
@@ -1239,6 +1458,8 @@ export default function AdminDashboard({ onLogout }) {
             <p className="text-muted mb-0">Loading pending requests...</p>
           ) : pendingRequests.length === 0 ? (
             <p className="text-muted mb-0">No pending requests.</p>
+          ) : filteredPendingListRows.length === 0 ? (
+            <p className="text-muted mb-0">No rows match your list search on this page. Clear the list search or change filters.</p>
           ) : (
             <>
               <div className="table-responsive">
@@ -1253,7 +1474,7 @@ export default function AdminDashboard({ onLogout }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {pendingRequests.map((req) => {
+                    {filteredPendingListRows.map((req) => {
                       const dateVal = req.date ?? req.attendanceDate;
                       const dateStr = dateVal ? (typeof dateVal === "string" ? dateVal.slice(0, 10) : new Date(dateVal).toISOString().slice(0, 10)) : "—";
                       const displayDate = dateStr !== "—" ? new Date(dateStr + "Z").toLocaleDateString("default", { dateStyle: "medium" }) : "—";
@@ -1566,10 +1787,7 @@ export default function AdminDashboard({ onLogout }) {
                               <button
                                 type="button"
                                 className="btn btn-link p-0 align-baseline text-start"
-                                onClick={() => {
-                                  setWorkflowSiteId(id);
-                                  setView("siteWorkflow");
-                                }}
+                                onClick={() => openSiteWorkflow(s)}
                               >
                                 {s.name ?? "—"}
                               </button>
@@ -1582,10 +1800,7 @@ export default function AdminDashboard({ onLogout }) {
                               <button
                                 type="button"
                                 className="btn btn-link p-0 align-baseline"
-                                onClick={() => {
-                                  setWorkflowSiteId(id);
-                                  setView("siteWorkflow");
-                                }}
+                                onClick={() => openSiteWorkflow(s)}
                               >
                                 {s.jobCode ?? "—"}
                               </button>
@@ -1610,10 +1825,7 @@ export default function AdminDashboard({ onLogout }) {
                                 type="button"
                                 className="btn btn-outline-dark btn-sm"
                                 disabled={id == null}
-                                onClick={() => {
-                                  setWorkflowSiteId(id);
-                                  setView("siteWorkflow");
-                                }}
+                                onClick={() => openSiteWorkflow(s)}
                               >
                                 Job workflow
                               </button>

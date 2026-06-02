@@ -1,13 +1,16 @@
 /**
- * Default shapes for site job workflow steps 4–7 (advance, technician payments,
- * tool issues, challenges). Backend stores JSON arrays; field names are stable
- * for reporting and can be mapped in the API layer if needed.
+ * Default shapes for site job workflow job-data tables and wizard-only blocks
+ * (advance, technician payments, team movement register, tool issues, challenges).
+ * Backend stores JSON arrays; field names are stable for reporting.
  */
 
 export const ADVANCE_EXPENSE_ROW_COUNT = 8;
 export const TECHNICIAN_PAYMENT_ROW_COUNT = 12;
 export const TECHNICIAN_PAYMENT_SLOTS = 6;
 export const TOOL_ISSUE_ROW_COUNT = 8;
+
+/** “Site team members movement register” — default rows like the paper form. */
+export const TEAM_MOVEMENT_REGISTER_ROW_COUNT = 10;
 
 /** Editable job-data tables can grow/shrink between these bounds (UI add/remove). */
 export const WORKFLOW_JOB_TABLE_MIN_ROWS = 1;
@@ -163,6 +166,54 @@ export function normalizeToolIssueLines(arr) {
     });
   }
   return rows;
+}
+
+export function emptyTeamMovementRow(slNo) {
+  return {
+    slNo,
+    name: "",
+    designation: "",
+    presentFromDate: "",
+    presentToDate: "",
+    absenceReason: "",
+  };
+}
+
+/**
+ * Wizard-only block: SITE TEAM MEMBERS MOVEMENT REGISTER (stored in PUT …/wizard `data`).
+ * @param {object} raw — saved `teamMovementRegister` or {}
+ * @param {object} siteFallback — site DTO for default customer name / job code
+ */
+export function normalizeTeamMovementRegister(raw, siteFallback) {
+  const r = raw && typeof raw === "object" ? raw : {};
+  const site = siteFallback && typeof siteFallback === "object" ? siteFallback : {};
+  const rowsIn = Array.isArray(r.rows) ? r.rows : [];
+  const rowCount = Math.min(
+    WORKFLOW_JOB_TABLE_MAX_ROWS,
+    Math.max(WORKFLOW_JOB_TABLE_MIN_ROWS, Math.max(TEAM_MOVEMENT_REGISTER_ROW_COUNT, rowsIn.length)),
+  );
+  const rows = [];
+  for (let i = 0; i < rowCount; i += 1) {
+    const src = rowsIn[i] || {};
+    rows.push({
+      ...emptyTeamMovementRow(i + 1),
+      ...src,
+      slNo: i + 1,
+      name: String(src.name ?? "").trim(),
+      designation: String(src.designation ?? "").trim(),
+      presentFromDate: String(src.presentFromDate ?? src.presentFrom ?? "").trim(),
+      presentToDate: String(src.presentToDate ?? src.presentTo ?? "").trim(),
+      absenceReason: String(src.absenceReason ?? "").trim(),
+    });
+  }
+  return {
+    customerName: String(r.customerName ?? site.customerName ?? site.name ?? "").trim(),
+    jobCode: String(r.jobCode ?? site.jobCode ?? "").trim(),
+    siteStartDate: String(r.siteStartDate ?? "").trim(),
+    siteFinishDate: String(r.siteFinishDate ?? "").trim(),
+    totalProjectDays: String(r.totalProjectDays ?? "").trim(),
+    rows,
+  };
 }
 
 /** Resolve challenge heads list (API or static fallback). */

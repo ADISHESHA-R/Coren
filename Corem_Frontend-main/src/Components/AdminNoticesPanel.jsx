@@ -112,6 +112,7 @@ export default function AdminNoticesPanel({ showSuccess }) {
   const [formError, setFormError] = useState("");
   const [noticesSearchInput, setNoticesSearchInput] = useState("");
   const [noticesSearchQuery, setNoticesSearchQuery] = useState("");
+  const [noticesAudienceFilter, setNoticesAudienceFilter] = useState("all");
   const [noticesPage, setNoticesPage] = useState(0);
   const [noticesSize] = useState(20);
   const [noticesTotal, setNoticesTotal] = useState(0);
@@ -128,6 +129,16 @@ export default function AdminNoticesPanel({ showSuccess }) {
     }
     return m;
   }, [noticeDirectoryUsers]);
+
+  const displayedNotices = useMemo(() => {
+    let list = notices;
+    if (noticesAudienceFilter === "targeted") {
+      list = list.filter((n) => getNoticeTargetUserId(n) != null);
+    } else if (noticesAudienceFilter === "broadcast") {
+      list = list.filter((n) => getNoticeTargetUserId(n) == null);
+    }
+    return list;
+  }, [notices, noticesAudienceFilter]);
 
   useEffect(() => {
     const auth = getAuthHeader();
@@ -381,7 +392,7 @@ export default function AdminNoticesPanel({ showSuccess }) {
         recipient and filters the employee notification list. Search matches notice text.
       </p>
       <div className="row g-2 align-items-end mb-3">
-        <div className="col-12 col-md-6 col-lg-5">
+        <div className="col-12 col-md-5 col-lg-4">
           <label className="form-label small mb-0" htmlFor="notices-search-input">
             Search message
           </label>
@@ -402,12 +413,29 @@ export default function AdminNoticesPanel({ showSuccess }) {
             </button>
           </div>
         </div>
+        <div className="col-12 col-md-4 col-lg-3">
+          <label className="form-label small mb-0" htmlFor="notices-audience-filter">
+            Audience (this page)
+          </label>
+          <select
+            id="notices-audience-filter"
+            className="form-select form-select-sm"
+            value={noticesAudienceFilter}
+            onChange={(e) => setNoticesAudienceFilter(e.target.value)}
+          >
+            <option value="all">All rows</option>
+            <option value="broadcast">All employees</option>
+            <option value="targeted">Targeted user</option>
+          </select>
+        </div>
       </div>
       {error ? <div className="alert alert-danger py-2 mb-2">{error}</div> : null}
       {loading ? (
         <p className="text-muted mb-0">Loading notices…</p>
       ) : notices.length === 0 ? (
         <p className="text-muted mb-0">No notices yet.</p>
+      ) : displayedNotices.length === 0 ? (
+        <p className="text-muted mb-0">No notices match the audience filter on this page.</p>
       ) : (
         <>
           <div className="table-responsive">
@@ -421,7 +449,7 @@ export default function AdminNoticesPanel({ showSuccess }) {
                 </tr>
               </thead>
               <tbody>
-                {notices.map((n) => (
+                {displayedNotices.map((n) => (
                   <tr key={n.id}>
                     <td className="small admin-notice-message-cell">{n.message ?? "—"}</td>
                     <td className="small text-nowrap">{formatNoticeAudience(n, userById)}</td>

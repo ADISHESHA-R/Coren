@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+# Safe defaults: public API URL only (see Corem_Frontend-main/.env.development).
+!.env.development
 *.pem
 Thumbs.db
 .DS_Store

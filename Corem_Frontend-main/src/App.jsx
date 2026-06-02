@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import LoginPage from "./Components/LoginPage";
 import Dashboard from "./Components/Dashboard";
 import AdminDashboard from "./Components/AdminDashboard";
+import CustomerFeedbackPublicPage from "./Components/CustomerFeedbackPublicPage.jsx";
 import Header from "./Components/Header";
 import Footer from "./Components/Footer";
 import { ToastProvider } from "./Components/Toast";
@@ -15,17 +17,38 @@ function getIsLoggedIn() {
   return Boolean(localStorage.getItem("accessToken"));
 }
 
+function getAuthRole() {
+  return localStorage.getItem("authRole") || "";
+}
+
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(getIsLoggedIn);
   const [bootstrapping, setBootstrapping] = useState(() => Boolean(localStorage.getItem("refreshToken")));
   const lastVisitRefreshRef = useRef(0);
   const bootstrapDoneRef = useRef(false);
+  const location = useLocation();
+  const navigate = useNavigate();
 
   useEffect(() => {
     const handleAuthUpdated = () => setIsLoggedIn(getIsLoggedIn());
     window.addEventListener("auth-updated", handleAuthUpdated);
     return () => window.removeEventListener("auth-updated", handleAuthUpdated);
   }, []);
+
+  /** Admins use `/admin/...` in the address bar; employees stay on `/`. Public feedback is exempt. */
+  useEffect(() => {
+    if (bootstrapping || !isLoggedIn) return;
+    const role = getAuthRole();
+    const p = location.pathname || "/";
+    if (p.startsWith("/customer-feedback/")) return;
+    if (role === "ADMIN") {
+      if (p === "/" || p === "") {
+        navigate("/admin/dashboard", { replace: true });
+      }
+    } else if (p.startsWith("/admin")) {
+      navigate("/", { replace: true });
+    }
+  }, [bootstrapping, isLoggedIn, location.pathname, navigate]);
 
   /** On first load: refresh access token if we have a refresh token (extends rolling 24h session). */
   useEffect(() => {
@@ -46,11 +69,6 @@ function App() {
         }
         const result = await refreshAccessToken();
         if (cancelled) return;
-        /**
-         * Refresh was attempted because a refresh token existed. If the server rejects it (or tokens are unusable),
-         * clear storage — otherwise the UI stays "logged in" with an expired access JWT and every admin call returns 401.
-         * On likely network errors, keep the existing access token so a flaky load does not force logout.
-         */
         if (!result.ok) {
           const msg = (result.message || "").toLowerCase();
           const networkish = msg.includes("network") || msg.includes("failed to fetch");
@@ -88,7 +106,6 @@ function App() {
     };
   }, []);
 
-  /** When user returns to the tab/window, refresh tokens (throttled) to extend session again. */
   const tryRefreshOnReturn = useCallback(async () => {
     if (!bootstrapDoneRef.current || !localStorage.getItem("refreshToken")) return;
     const now = Date.now();
@@ -135,29 +152,57 @@ function App() {
     if (message) sessionStorage.setItem("logoutMessage", message);
     window.dispatchEvent(new Event("auth-updated"));
     setIsLoggedIn(false);
+    navigate("/", { replace: true });
   };
+
+  const role = isLoggedIn ? getAuthRole() : "";
 
   return (
     <ToastProvider>
-      <div className="app-shell">
-        <Header onLogout={handleLogout} sessionReady={!bootstrapping} />
-        <main className={isLoggedIn ? "main-content" : "auth-page"}>
-          {bootstrapping ? (
-            <div className="session-bootstrap" role="status" aria-live="polite">
-              <p className="session-bootstrap-text">Restoring your session…</p>
+      <Routes>
+        <Route
+          path="/customer-feedback/:siteId"
+          element={
+            <div className="app-shell">
+              <main className="auth-page">
+                <CustomerFeedbackPublicPage />
+              </main>
+              <Footer />
             </div>
-          ) : isLoggedIn ? (
-            localStorage.getItem("authRole") === "ADMIN" ? (
-              <AdminDashboard onLogout={handleLogout} />
-            ) : (
-              <Dashboard onLogout={handleLogout} />
-            )
-          ) : (
-            <LoginPage />
-          )}
-        </main>
-        <Footer />
-      </div>
+          }
+        />
+        <Route
+          path="*"
+          element={
+            <div className="app-shell">
+              <Header onLogout={handleLogout} sessionReady={!bootstrapping} />
+              <main className={isLoggedIn ? "main-content" : "auth-page"}>
+                {bootstrapping ? (
+                  <div className="session-bootstrap" role="status" aria-live="polite">
+                    <p className="session-bootstrap-text">Restoring your session…</p>
+                  </div>
+                ) : isLoggedIn ? (
+                  role === "ADMIN" ? (
+                    <Routes>
+                      <Route path="/admin/*" element={<AdminDashboard onLogout={handleLogout} />} />
+                      <Route path="*" element={<Navigate to="/admin/dashboard" replace />} />
+                    </Routes>
+                  ) : (
+                    <Routes>
+                      <Route path="/*" element={<Dashboard onLogout={handleLogout} />} />
+                    </Routes>
+                  )
+                ) : (
+                  <Routes>
+                    <Route path="*" element={<LoginPage />} />
+                  </Routes>
+                )}
+              </main>
+              <Footer />
+            </div>
+          }
+        />
+      </Routes>
     </ToastProvider>
   );
 }

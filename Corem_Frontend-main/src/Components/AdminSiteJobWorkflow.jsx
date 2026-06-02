@@ -1,18 +1,16 @@
-import { useCallback, useEffect, Fragment, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, Fragment, useId, useMemo, useRef, useState } from "react";
 import { refreshAccessToken } from "../utils/refreshAccessToken";
 import { API_BASE_URL as BASE_URL } from "../config/apiBaseUrl.js";
+import { buildCustomerFeedbackFrontDoorUrl, resolvePublicCustomerFeedbackPostUrl } from "../config/customerFeedbackPublic.js";
 import {
+  CHECKLIST_CATEGORY_OPTIONS,
   CHECKLIST_KEY_TO_LABEL,
-  TOOL_MARK_DAYS,
   calendarDayForCell,
-  defaultToolCategories,
-  emptyItem,
   formatYearMonthHeading,
   getMachineryChecklistKey,
   getSeededToolChecklistCategories,
   isToolChecklistEmptyForAutoSeed,
   normalizeToolChecklistFromWizard,
-  padMarksForMonth,
   toolDayBlockLength,
   toolDayBlockStartCol,
 } from "../data/toolChecklistCatalog.js";
@@ -31,9 +29,12 @@ import {
   emptyChallengeLineRow,
   emptyTechnicianPaymentRow,
   emptyToolIssueRow,
+  emptyTeamMovementRow,
   normalizeAdvanceLines,
   normalizeTechnicianPaymentLines,
   normalizeToolIssueLines,
+  normalizeTeamMovementRegister,
+  TEAM_MOVEMENT_REGISTER_ROW_COUNT,
   parseBehaviourReport,
   parseCustomerFeedbackRecord,
   resizeBehaviourMemberColumns,
@@ -151,12 +152,179 @@ const STEPS = [
   { id: "engineering", title: "Engineering procedure" },
   { id: "tools", title: "Tools checklist (by category)" },
   { id: "expenses", title: "Site advance & technician payments" },
+  { id: "teamMovement", title: "Team members movement register" },
   { id: "toolIssues", title: "Tools missing / damage / repair" },
   { id: "challenges", title: "Challenges at site" },
   { id: "behaviour", title: "Site behaviour report" },
   { id: "attendance", title: "Attendance register" },
   { id: "completion", title: "Completion & feedback" },
 ];
+
+/** Distinct trimmed string values from a row list for column filter dropdowns. */
+function wfDistinctValues(rows, accessor) {
+  const s = new Set();
+  for (const row of rows || []) {
+    const v = String(accessor(row) ?? "").trim();
+    if (v) s.add(v);
+  }
+  return [...s].sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Row indices visible under search (any of textSearchFields) + exact column match (exactColMatchers[colKey](row) === cols[colKey]).
+ */
+function filterRowIndices(rows, filter, textSearchFields, exactColMatchers) {
+  const f = filter || { search: "", cols: {} };
+  const q = String(f.search || "").trim().toLowerCase();
+  const cols = f.cols || {};
+  return (rows || []).map((_, i) => i).filter((i) => {
+    const row = rows[i];
+    if (q) {
+      const hay = textSearchFields.map((fn) => String(fn(row) ?? "").toLowerCase()).join("\n");
+      if (!hay.includes(q)) return false;
+    }
+    for (const [key, want] of Object.entries(cols)) {
+      if (!want) continue;
+      const fn = exactColMatchers[key];
+      if (fn && String(fn(row) ?? "").trim() !== want) return false;
+    }
+    return true;
+  });
+}
+
+/** Top search + “Filter” button; column filters open in a right-hand drawer (accordion + FILTER / CLEAR ALL). */
+function WorkflowSearchFilterShell({ drawerTitle, search, onSearchChange, columnSpec, cols, onApplyColumnFilters }) {
+  const drawerTitleId = useId();
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [draftCols, setDraftCols] = useState({});
+  const [expanded, setExpanded] = useState({});
+
+  const hasColumns = Array.isArray(columnSpec) && columnSpec.length > 0;
+
+  useEffect(() => {
+    if (!drawerOpen) return undefined;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [drawerOpen]);
+
+  useEffect(() => {
+    if (!drawerOpen) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape") setDrawerOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [drawerOpen]);
+
+  const openDrawer = () => {
+    if (!hasColumns) return;
+    setDraftCols({ ...(cols || {}) });
+    setDrawerOpen(true);
+  };
+
+  const applyAndClose = () => {
+    onApplyColumnFilters({ ...draftCols });
+    setDrawerOpen(false);
+  };
+
+  const clearAllFilters = () => {
+    setDraftCols({});
+    onApplyColumnFilters({});
+  };
+
+  const toggleAccordion = (key) => {
+    setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  return (
+    <>
+      <div className="site-job-workflow__sf-bar">
+        <div className="site-job-workflow__sf-search-wrap">
+          <input
+            type="search"
+            className="form-control site-job-workflow__sf-search"
+            placeholder="Search…"
+            value={search}
+            onChange={(e) => onSearchChange(e.target.value)}
+            aria-label="Search"
+          />
+          <span className="site-job-workflow__sf-search-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+              <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z" />
+            </svg>
+          </span>
+        </div>
+        {hasColumns ? (
+          <button type="button" className="btn site-job-workflow__sf-filter-btn" onClick={openDrawer}>
+            <span className="site-job-workflow__sf-filter-icon" aria-hidden="true" />
+            Filter
+          </button>
+        ) : null}
+      </div>
+      {drawerOpen && hasColumns ? (
+        <>
+          <div className="site-job-workflow__sf-backdrop" onClick={() => setDrawerOpen(false)} role="presentation" />
+          <div
+            className="site-job-workflow__sf-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={drawerTitleId}
+          >
+            <div className="site-job-workflow__sf-drawer-head">
+              <h2 id={drawerTitleId} className="site-job-workflow__sf-drawer-title">
+                Filter {drawerTitle}
+              </h2>
+              <button type="button" className="site-job-workflow__sf-drawer-close" onClick={() => setDrawerOpen(false)} aria-label="Close filters">
+                ×
+              </button>
+            </div>
+            <div className="site-job-workflow__sf-drawer-body">
+              {columnSpec.map(({ key, label, options }) => (
+                <div key={key} className="site-job-workflow__sf-accordion">
+                  <button type="button" className="site-job-workflow__sf-accordion-head" onClick={() => toggleAccordion(key)} aria-expanded={Boolean(expanded[key])}>
+                    <span>{label}</span>
+                    <span className={`site-job-workflow__sf-accordion-chevron ${expanded[key] ? "is-open" : ""}`} aria-hidden />
+                  </button>
+                  {expanded[key] ? (
+                    <div className="site-job-workflow__sf-accordion-panel">
+                      <label className="site-job-workflow__sf-panel-label" htmlFor={`${drawerTitleId}-${key}`}>
+                        {label}
+                      </label>
+                      <select
+                        id={`${drawerTitleId}-${key}`}
+                        className="form-select form-select-sm"
+                        value={draftCols[key] ?? ""}
+                        onChange={(e) => setDraftCols((d) => ({ ...d, [key]: e.target.value }))}
+                      >
+                        <option value="">All</option>
+                        {(options || []).map((o) => (
+                          <option key={o} value={o}>
+                            {o.length > 56 ? `${o.slice(0, 56)}…` : o}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+            <div className="site-job-workflow__sf-drawer-footer">
+              <button type="button" className="site-job-workflow__sf-btn-filter" onClick={applyAndClose}>
+                FILTER
+              </button>
+              <button type="button" className="site-job-workflow__sf-btn-clear" onClick={clearAllFilters}>
+                CLEAR ALL
+              </button>
+            </div>
+          </div>
+        </>
+      ) : null}
+    </>
+  );
+}
 
 function getAuthHeader() {
   const tokenType = (localStorage.getItem("tokenType") || "Bearer").trim();
@@ -188,16 +356,199 @@ function currentYearMonth() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
-/** Pick a short key for a new checklist section (A–Z, then Cat1, Cat2, …). */
-function nextToolCategoryKey(categories) {
-  const used = new Set((categories || []).map((c) => String(c.key)));
-  for (let code = 65; code <= 90; code += 1) {
-    const k = String.fromCharCode(code);
-    if (!used.has(k)) return k;
+/** Resolve year + month (1–12) from intro “Tools checklist month” or current calendar month. */
+function parseYearMonthFromIntroToolsChecklist(yyyyMm) {
+  const m = String(yyyyMm ?? "").trim();
+  if (/^\d{4}-\d{2}$/.test(m)) {
+    const [y, mo] = m.split("-").map(Number);
+    if (Number.isFinite(y) && mo >= 1 && mo <= 12) return { year: y, month: mo };
   }
-  let n = 1;
-  while (used.has(`Cat${n}`)) n += 1;
-  return `Cat${n}`;
+  const d = new Date();
+  return { year: d.getFullYear(), month: d.getMonth() + 1 };
+}
+
+function normalizeDayPresentMap(dp) {
+  if (!dp || typeof dp !== "object") return {};
+  const out = {};
+  for (const [k, v] of Object.entries(dp)) {
+    const day = Number(k);
+    if (!(day >= 1 && day <= 31)) continue;
+    if (v === true) out[String(day)] = true;
+  }
+  return out;
+}
+
+function normalizeEquipmentPortalPayload(raw) {
+  if (!raw || typeof raw !== "object") {
+    const { year, month } = parseYearMonthFromIntroToolsChecklist("");
+    return { year, month, categories: [] };
+  }
+  const y = raw.year != null ? Number(raw.year) : null;
+  const mo = raw.month != null ? Number(raw.month) : null;
+  const categories = Array.isArray(raw.categories)
+    ? raw.categories.map((cat, ci) => ({
+        id: cat.id != null && cat.id !== "" ? Number(cat.id) : null,
+        title: String(cat.title ?? ""),
+        sortOrder: cat.sortOrder != null ? Number(cat.sortOrder) : ci,
+        items: Array.isArray(cat.items)
+          ? cat.items.map((it, ii) => ({
+              id: it.id != null && it.id !== "" ? Number(it.id) : null,
+              lineOrder: it.lineOrder != null ? Number(it.lineOrder) : ii,
+              itemDescription: it.itemDescription != null ? String(it.itemDescription) : "",
+              uom: it.uom != null ? String(it.uom) : "",
+              qty: it.qty != null ? String(it.qty) : "",
+              dateNote:
+                it.dateNote != null && String(it.dateNote).trim() !== "" ? String(it.dateNote).trim() : null,
+              dayPresent: normalizeDayPresentMap(it.dayPresent),
+            }))
+          : [],
+      }))
+    : [];
+  return {
+    year: Number.isFinite(y) ? y : null,
+    month: Number.isFinite(mo) && mo >= 1 && mo <= 12 ? mo : null,
+    categories,
+  };
+}
+
+function emptyEquipmentPortalItem(lineOrder) {
+  return {
+    id: null,
+    lineOrder,
+    itemDescription: "",
+    uom: "",
+    qty: "",
+    dateNote: null,
+    dayPresent: {},
+  };
+}
+
+/** Default A/B/C/I/J/K section titles so machinery import (`A.` prefix match) works. */
+function buildDefaultEquipmentPortalTemplateCategories() {
+  return CHECKLIST_CATEGORY_OPTIONS.filter((o) => o.key).map((o, i) => {
+    const label = CHECKLIST_KEY_TO_LABEL[o.key] || o.key;
+    return {
+      id: null,
+      title: `${o.key}. ${label}`,
+      sortOrder: i,
+      items: [emptyEquipmentPortalItem(0)],
+    };
+  });
+}
+
+/** Build PUT body for /job-data/equipment-portal (full tree + month availability). */
+function buildEquipmentPortalPutBody(portal) {
+  const y = portal?.year;
+  const mo = portal?.month;
+  const includeMonth = Number.isFinite(y) && Number.isFinite(mo) && mo >= 1 && mo <= 12;
+  const categories = Array.isArray(portal?.categories) ? portal.categories : [];
+  const body = {
+    categories: categories.map((cat, ci) => ({
+      id: cat.id,
+      title: String(cat.title ?? "").trim() || "Untitled",
+      sortOrder: cat.sortOrder != null ? Number(cat.sortOrder) : ci,
+      items: (cat.items || []).map((it, ii) => {
+        const item = {
+          id: it.id,
+          lineOrder: it.lineOrder != null ? Number(it.lineOrder) : ii,
+          itemDescription: it.itemDescription != null ? String(it.itemDescription) : "",
+          uom: it.uom != null ? String(it.uom) : "",
+          qty: it.qty != null ? String(it.qty) : "",
+          dateNote:
+            it.dateNote != null && String(it.dateNote).trim() !== "" ? String(it.dateNote).trim() : null,
+        };
+        if (includeMonth) {
+          const map = {};
+          const dp = it.dayPresent && typeof it.dayPresent === "object" ? it.dayPresent : {};
+          for (let d = 1; d <= 31; d += 1) {
+            const key = String(d);
+            if (dp[key] === true) map[key] = true;
+          }
+          item.dayPresent = map;
+        } else {
+          item.dayPresent = null;
+        }
+        return item;
+      }),
+    })),
+  };
+  if (includeMonth) {
+    body.availabilityYear = y;
+    body.availabilityMonth = mo;
+  }
+  return body;
+}
+
+function findEquipmentCategoryIndexForMachineryKey(categories, ck) {
+  const k = String(ck || "").toUpperCase().trim();
+  if (!k) return -1;
+  return (categories || []).findIndex((c) => String(c.title || "").trim().toUpperCase().startsWith(`${k}.`));
+}
+
+const EQUIPMENT_ROW_DND_MIME = "application/x-corem-equipment-row";
+
+function parseEquipmentDnDTransfer(e) {
+  try {
+    const raw = e.dataTransfer.getData(EQUIPMENT_ROW_DND_MIME) || e.dataTransfer.getData("text/plain");
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    if (!Number.isFinite(Number(o.fromCi)) || !Number.isFinite(Number(o.fromIi))) return null;
+    return { fromCi: Number(o.fromCi), fromIi: Number(o.fromIi) };
+  } catch {
+    return null;
+  }
+}
+
+/** Move one item so it ends up before index `toIi` in `toCi` (after removal from source). */
+function moveEquipmentItemToIndex(categories, fromCi, fromIi, toCi, toIi) {
+  const next = categories.map((c) => ({ ...c, items: [...(c.items || [])] }));
+  if (fromCi < 0 || fromCi >= next.length || toCi < 0 || toCi >= next.length) return categories;
+  const fromItems = next[fromCi].items;
+  if (fromIi < 0 || fromIi >= fromItems.length) return categories;
+  const [moved] = fromItems.splice(fromIi, 1);
+  const toItems = next[toCi].items;
+  let insertAt = toIi;
+  if (fromCi === toCi && fromIi < insertAt) insertAt -= 1;
+  if (insertAt < 0) insertAt = 0;
+  if (insertAt > toItems.length) insertAt = toItems.length;
+  toItems.splice(insertAt, 0, moved);
+  return next.map((c) => ({
+    ...c,
+    items: c.items.map((it, idx) => ({ ...it, lineOrder: idx })),
+  }));
+}
+
+function appendEquipmentItemToCategory(categories, fromCi, fromIi, toCi) {
+  const len = (categories[toCi]?.items || []).length;
+  return moveEquipmentItemToIndex(categories, fromCi, fromIi, toCi, len);
+}
+
+function portalEligibleForLayoutApi(portal) {
+  const cats = portal?.categories;
+  if (!Array.isArray(cats) || cats.length === 0) return false;
+  for (const c of cats) {
+    if (c.id == null || !Number.isFinite(Number(c.id))) return false;
+    for (const it of c.items || []) {
+      if (it.id == null || !Number.isFinite(Number(it.id))) return false;
+    }
+  }
+  return true;
+}
+
+/** Body for PUT .../equipment-portal/layout — persisted categories only, every item id once. */
+function buildEquipmentLayoutRequestBody(portal) {
+  const categories = portal?.categories || [];
+  return {
+    categories: categories
+      .filter((c) => c.id != null && Number.isFinite(Number(c.id)))
+      .map((c) => ({
+        categoryId: Number(c.id),
+        itemIds: (c.items || [])
+          .map((it) => it.id)
+          .filter((id) => id != null && Number.isFinite(Number(id)))
+          .map(Number),
+      })),
+  };
 }
 
 function emptyIntroFromSite(site) {
@@ -456,6 +807,45 @@ function attendanceRowStatus(row) {
   return (row?.status ?? row?.attendanceStatus ?? "PENDING").toString().trim().toUpperCase();
 }
 
+/** Flattened fields for portal check-in list search / column filters. */
+function attendancePortalFilterFields(row) {
+  const ymd = attendanceRowDateYmd(row);
+  const emp = row?.employeeName ?? row?.user?.name ?? row?.employee?.name ?? row?.name ?? "";
+  const siteName = row?.site?.name ?? row?.siteName ?? "";
+  const shiftLabel = SHIFT_LABELS[row?.shift] ?? row?.shift ?? "";
+  return {
+    employee: String(emp).trim(),
+    shift: String(shiftLabel).trim(),
+    site: String(siteName).trim(),
+    status: attendanceRowStatus(row),
+    date: ymd,
+  };
+}
+
+const BEHAVIOUR_CELL_FILTER_OPTS = ["Has mark", "Has date", "Empty"];
+
+function behaviourIssueRowMatchesFilters(issueRowIndex, behaviourState, filter) {
+  const f = filter || { search: "", cols: {} };
+  const nMem = behaviourState.members?.length ?? 0;
+  const cols = f.cols || {};
+  for (let mi = 0; mi < nMem; mi += 1) {
+    const want = cols[`m${mi}`];
+    if (!want) continue;
+    const cell = behaviourState.matrix[issueRowIndex]?.[mi] ?? { checked: false, date: "" };
+    const hasDate = Boolean(String(cell.date ?? "").trim());
+    if (want === "Has mark" && !cell.checked) return false;
+    if (want === "Has date" && !hasDate) return false;
+    if (want === "Empty" && (cell.checked || hasDate)) return false;
+  }
+  const q = String(f.search ?? "").trim().toLowerCase();
+  if (q) {
+    const issue = BEHAVIOUR_ISSUE_ROWS[issueRowIndex];
+    const hay = `${issue?.label ?? ""} ${issue?.slNo ?? ""}`.toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  return true;
+}
+
 function formatYmdLocalMedium(ymd) {
   if (!ymd || ymd.length < 10) return "—";
   const parts = ymd.slice(0, 10).split("-").map(Number);
@@ -468,7 +858,14 @@ function formatYmdLocalMedium(ymd) {
   }
 }
 
-export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
+export default function AdminSiteJobWorkflow({
+  siteId,
+  showSuccess,
+  onExit,
+  onNavigateSitesList,
+  urlStep1Based = null,
+  onStepIndexChange,
+}) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -493,6 +890,12 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
     normalizeTechnicianPaymentLines([]),
   );
   const [toolIssueLines, setToolIssueLines] = useState(() => normalizeToolIssueLines([]));
+  /** Equipment portal (step 3 — tools checklist): loaded/saved via GET/PUT .../job-data/equipment-portal. */
+  const [equipmentPortal, setEquipmentPortal] = useState(null);
+  const [equipmentPortalLoadError, setEquipmentPortalLoadError] = useState("");
+  const lastEquipmentPortalFetchRef = useRef({ year: null, month: null });
+  /** Visual: which equipment row is being dragged (categoryIndex-itemIndex). */
+  const [equipmentDragKey, setEquipmentDragKey] = useState(null);
   const [challengeLineRows, setChallengeLineRows] = useState(() => buildChallengeLineWorkflowState([], CHALLENGE_HEADS_FALLBACK));
   const [attendanceAdHocPickId, setAttendanceAdHocPickId] = useState("");
   const [siteAttendanceRecords, setSiteAttendanceRecords] = useState([]);
@@ -503,6 +906,24 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
   const [siteAttRejectReason, setSiteAttRejectReason] = useState("");
   const [siteAttActionId, setSiteAttActionId] = useState(null);
   const [employeeOptions, setEmployeeOptions] = useState([]);
+  /** Per-table list UI: { [tableKey]: { search, cols: { columnKey: exactValue } } } */
+  const [workflowTableFilters, setWorkflowTableFilters] = useState({});
+  const [stepShellCollapsed, setStepShellCollapsed] = useState(false);
+  const primaryTabsRef = useRef(null);
+  const urlStep1BasedRef = useRef(urlStep1Based);
+  urlStep1BasedRef.current = urlStep1Based;
+
+  const patchWfFilter = useCallback((tableKey, patch) => {
+    setWorkflowTableFilters((prev) => {
+      const cur = prev[tableKey] || { search: "", cols: {} };
+      const replaceCols = patch.replaceCols === true;
+      const hasCols = Object.prototype.hasOwnProperty.call(patch, "cols");
+      const nextCols = hasCols ? (replaceCols ? { ...(patch.cols || {}) } : { ...cur.cols, ...(patch.cols || {}) }) : cur.cols;
+      const { cols: _drop, replaceCols: _rc, ...rest } = patch;
+      return { ...prev, [tableKey]: { ...cur, ...rest, cols: nextCols } };
+    });
+  }, []);
+
   const wizardDataRef = useRef(wizardData);
   wizardDataRef.current = wizardData;
 
@@ -526,6 +947,37 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
     if (siteAttendanceStatusTab === "ALL") return siteAttendanceRecords;
     return siteAttendanceRecords.filter((r) => attendanceRowStatus(r) === siteAttendanceStatusTab);
   }, [siteAttendanceRecords, siteAttendanceStatusTab]);
+
+  const siteAttendancePortalDisplay = useMemo(() => {
+    const rows = filteredSiteAttendance;
+    const f = workflowTableFilters.site_att_portal || { search: "", cols: {} };
+    return rows.filter((req) => {
+      const v = attendancePortalFilterFields(req);
+      const q = String(f.search || "").trim().toLowerCase();
+      if (q) {
+        const hay = [v.employee, v.shift, v.site, v.status, v.date].join("\n").toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      const c = f.cols || {};
+      if (c.employee && v.employee !== c.employee) return false;
+      if (c.shift && v.shift !== c.shift) return false;
+      if (c.site && v.site !== c.site) return false;
+      if (c.status && v.status !== c.status) return false;
+      if (c.date && v.date !== c.date) return false;
+      return true;
+    });
+  }, [filteredSiteAttendance, workflowTableFilters]);
+
+  const siteAttendancePortalColumnSpec = useMemo(() => {
+    const rows = filteredSiteAttendance;
+    return [
+      { key: "employee", label: "Employee", options: wfDistinctValues(rows, (r) => attendancePortalFilterFields(r).employee) },
+      { key: "shift", label: "Shift", options: wfDistinctValues(rows, (r) => attendancePortalFilterFields(r).shift) },
+      { key: "site", label: "Site", options: wfDistinctValues(rows, (r) => attendancePortalFilterFields(r).site) },
+      { key: "status", label: "Status", options: wfDistinctValues(rows, (r) => attendancePortalFilterFields(r).status) },
+      { key: "date", label: "Date", options: wfDistinctValues(rows, (r) => attendancePortalFilterFields(r).date) },
+    ];
+  }, [filteredSiteAttendance]);
 
   const refreshSiteAttendanceList = useCallback(async () => {
     if (!siteId) return;
@@ -581,7 +1033,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
   }, [siteId]);
 
   useEffect(() => {
-    if (currentStepIndex !== 7 || !siteId) return undefined;
+    if (currentStepIndex !== 8 || !siteId) return undefined;
     refreshSiteAttendanceList();
     return undefined;
   }, [currentStepIndex, siteId, refreshSiteAttendanceList]);
@@ -642,6 +1094,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
         signatoryCompany: "",
       };
       merged.certificateDraft = { ...certDefaults, ...(merged.certificateDraft || {}) };
+      merged.teamMovementRegister = normalizeTeamMovementRegister(merged.teamMovementRegister, sitePayload);
       setWizardData(merged);
 
       const headsRes = await adminFetchJson(`${BASE_URL}/api/meta/challenge-line-heads`);
@@ -697,8 +1150,34 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
         setEmployeeOptions([]);
       }
 
-      const uiStep = Math.min(Math.max(parsed.step - 1, 0), STEPS.length - 1);
+      const { year: epY, month: epM } = parseYearMonthFromIntroToolsChecklist(merged.projectIntroduction?.toolsChecklistMonth);
+      lastEquipmentPortalFetchRef.current = { year: null, month: null };
+      const epRes = await adminFetchJson(
+        `${BASE_URL}/api/admin/sites/${siteId}/job-data/equipment-portal?year=${epY}&month=${epM}`,
+      );
+      setEquipmentPortalLoadError("");
+      if (epRes.res.ok && epRes.data?.success && epRes.data.data != null) {
+        let portal = normalizeEquipmentPortalPayload(epRes.data.data);
+        if (portal.year == null || portal.month == null) {
+          portal = { ...portal, year: portal.year ?? epY, month: portal.month ?? epM };
+        }
+        setEquipmentPortal(portal);
+        lastEquipmentPortalFetchRef.current = { year: epY, month: epM };
+      } else {
+        setEquipmentPortal(null);
+        lastEquipmentPortalFetchRef.current = { year: null, month: null };
+        setEquipmentPortalLoadError(epRes.data?.message || "Failed to load equipment portal.");
+      }
+
+      const uiStepFromUrl = urlStep1BasedRef.current;
+      const serverStep1 = Math.min(Math.max(Number(parsed.step) || 1, 1), STEPS.length);
+      const effectiveStep1 =
+        uiStepFromUrl != null && Number.isFinite(uiStepFromUrl) && uiStepFromUrl >= 1 && uiStepFromUrl <= STEPS.length
+          ? Math.floor(uiStepFromUrl)
+          : serverStep1;
+      const uiStep = Math.min(Math.max(effectiveStep1 - 1, 0), STEPS.length - 1);
       setCurrentStepIndex(uiStep);
+      onStepIndexChange?.(uiStep);
       setAttendanceBlock(0);
       setAttendanceDirtyCells(new Map());
     } catch (e) {
@@ -707,9 +1186,111 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
     setLoading(false);
   }, [siteId]);
 
+  const refetchEquipmentPortal = useCallback(async () => {
+    if (!siteId) return;
+    setEquipmentPortalLoadError("");
+    const want = parseYearMonthFromIntroToolsChecklist(wizardDataRef.current?.projectIntroduction?.toolsChecklistMonth);
+    const { res, data } = await adminFetchJson(
+      `${BASE_URL}/api/admin/sites/${siteId}/job-data/equipment-portal?year=${want.year}&month=${want.month}`,
+    );
+    if (res.ok && data?.success && data.data != null) {
+      let portal = normalizeEquipmentPortalPayload(data.data);
+      if (portal.year == null || portal.month == null) {
+        portal = { ...portal, year: portal.year ?? want.year, month: portal.month ?? want.month };
+      }
+      setEquipmentPortal(portal);
+      lastEquipmentPortalFetchRef.current = { year: want.year, month: want.month };
+    } else {
+      setEquipmentPortal(null);
+      lastEquipmentPortalFetchRef.current = { year: null, month: null };
+      setEquipmentPortalLoadError(data?.message || "Failed to load equipment portal.");
+    }
+  }, [siteId]);
+
+  const applyEquipmentPortalReorderAndSyncLayout = useCallback(
+    async (nextPortal) => {
+      setEquipmentPortal(nextPortal);
+      if (!portalEligibleForLayoutApi(nextPortal)) {
+        setToolChecklistActionMessage({
+          kind: "info",
+          text: 'Rows reordered locally. Use “Save & next” once so new rows/sections receive IDs — then drag-and-drop saves order via PUT …/equipment-portal/layout.',
+        });
+        return;
+      }
+      try {
+        const body = buildEquipmentLayoutRequestBody(nextPortal);
+        const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/equipment-portal/layout`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (res.ok && data?.success && data.data != null) {
+          let portal = normalizeEquipmentPortalPayload(data.data);
+          const y = nextPortal.year;
+          const m = nextPortal.month;
+          if ((portal.year == null || portal.month == null) && y != null && m != null) {
+            portal = { ...portal, year: portal.year ?? y, month: portal.month ?? m };
+          }
+          setEquipmentPortal(portal);
+          setToolChecklistActionMessage({ kind: "success", text: "Tool order saved to the server (layout API)." });
+          showSuccess?.("Tool order saved.");
+        } else {
+          setToolChecklistActionMessage({
+            kind: "warning",
+            text: data?.message || "Layout save failed — order kept locally until you use Save & next.",
+          });
+        }
+      } catch (e) {
+        setToolChecklistActionMessage({ kind: "warning", text: e?.message || "Layout save failed." });
+      }
+    },
+    [siteId, showSuccess],
+  );
+
   useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  useEffect(() => {
+    if (loading) return;
+    if (urlStep1Based == null || !Number.isFinite(urlStep1Based)) return;
+    const step1 = Math.min(Math.max(Math.floor(urlStep1Based), 1), STEPS.length);
+    setCurrentStepIndex(step1 - 1);
+  }, [urlStep1Based, loading, siteId]);
+
+  useEffect(() => {
+    if (currentStepIndex !== 2 || !siteId || loading) return undefined;
+    const want = parseYearMonthFromIntroToolsChecklist(wizardDataRef.current?.projectIntroduction?.toolsChecklistMonth);
+    if (
+      lastEquipmentPortalFetchRef.current.year === want.year &&
+      lastEquipmentPortalFetchRef.current.month === want.month
+    ) {
+      return undefined;
+    }
+    let cancelled = false;
+    (async () => {
+      const { res, data } = await adminFetchJson(
+        `${BASE_URL}/api/admin/sites/${siteId}/job-data/equipment-portal?year=${want.year}&month=${want.month}`,
+      );
+      if (cancelled) return;
+      setEquipmentPortalLoadError("");
+      if (res.ok && data?.success && data.data != null) {
+        let portal = normalizeEquipmentPortalPayload(data.data);
+        if (portal.year == null || portal.month == null) {
+          portal = { ...portal, year: portal.year ?? want.year, month: portal.month ?? want.month };
+        }
+        setEquipmentPortal(portal);
+        lastEquipmentPortalFetchRef.current = { year: want.year, month: want.month };
+      } else {
+        setEquipmentPortal(null);
+        lastEquipmentPortalFetchRef.current = { year: null, month: null };
+        setEquipmentPortalLoadError(data?.message || "Failed to load equipment portal.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentStepIndex, wizardData.projectIntroduction?.toolsChecklistMonth, siteId, loading]);
 
   useEffect(() => {
     if (!toolChecklistActionMessage.text) return undefined;
@@ -807,7 +1388,25 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
       const nextIdx = Math.min(currentStepIndex + 1, STEPS.length - 1);
       const nextStep1Based = nextIdx + 1;
 
-      if (currentStepIndex <= 2) {
+      if (currentStepIndex <= 1) {
+        await persistWizard(nextStep1Based, wizardDataRef.current);
+      } else if (currentStepIndex === 2) {
+        const portal = equipmentPortal;
+        if (!portal) throw new Error("Equipment checklist not loaded yet.");
+        const putBody = buildEquipmentPortalPutBody(portal);
+        const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/equipment-portal`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(putBody),
+        });
+        if (!res.ok || data?.success === false) throw new Error(data?.message || "Failed to save equipment portal.");
+        if (data?.data != null) {
+          const next = normalizeEquipmentPortalPayload(data.data);
+          setEquipmentPortal(next);
+          if (next.year != null && next.month != null) {
+            lastEquipmentPortalFetchRef.current = { year: next.year, month: next.month };
+          }
+        }
         await persistWizard(nextStep1Based, wizardDataRef.current);
       } else if (currentStepIndex === 3) {
         const advPayload = advanceLines;
@@ -828,6 +1427,13 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
         if (!r2.ok || d2?.success === false) throw new Error(d2?.message || "Failed to save technician payments.");
         await persistWizard(nextStep1Based, wizardDataRef.current);
       } else if (currentStepIndex === 4) {
+        const snapshot = {
+          ...wizardDataRef.current,
+          teamMovementRegister: normalizeTeamMovementRegister(wizardDataRef.current.teamMovementRegister, site),
+        };
+        await persistWizard(nextStep1Based, snapshot);
+        setWizardData(snapshot);
+      } else if (currentStepIndex === 5) {
         const issuesPayload = toolIssueLines;
         if (!Array.isArray(issuesPayload)) throw new Error("Tool issues invalid.");
         const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/tool-issues`, {
@@ -837,7 +1443,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
         });
         if (!res.ok || data?.success === false) throw new Error(data?.message || "Failed to save tool issues.");
         await persistWizard(nextStep1Based, wizardDataRef.current);
-      } else if (currentStepIndex === 5) {
+      } else if (currentStepIndex === 6) {
         const challPayload = challengeLineRows.map(stripChallengeLineForApi);
         if (!Array.isArray(challPayload)) throw new Error("Challenge lines invalid.");
         const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/challenge-lines`, {
@@ -847,7 +1453,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
         });
         if (!res.ok || data?.success === false) throw new Error(data?.message || "Failed to save challenges.");
         await persistWizard(nextStep1Based, wizardDataRef.current);
-      } else if (currentStepIndex === 6) {
+      } else if (currentStepIndex === 7) {
         const parsed = serializeBehaviourReport(behaviourState);
         const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/behaviour-report`, {
           method: "PUT",
@@ -856,7 +1462,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
         });
         if (!res.ok || data?.success === false) throw new Error(data?.message || "Failed to save behaviour report.");
         await persistWizard(nextStep1Based, wizardDataRef.current);
-      } else if (currentStepIndex === 7) {
+      } else if (currentStepIndex === 8) {
         const cells = [];
         attendanceDirtyCells.forEach((code, key) => {
           const [employeeUserId, date] = key.split("|");
@@ -878,8 +1484,9 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
       }
 
       setCurrentStepIndex(nextIdx);
+      onStepIndexChange?.(nextIdx);
       showSuccess?.("Saved.");
-      if (currentStepIndex === 7) {
+      if (currentStepIndex === 8) {
         const regRes = await adminFetchJson(
           `${BASE_URL}/api/admin/sites/${siteId}/attendance-register?blockIndex=${attendanceBlock}&daysPerBlock=${DAYS_CHECKLIST}`,
         );
@@ -892,7 +1499,9 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
   };
 
   const handleBack = () => {
-    setCurrentStepIndex((i) => Math.max(0, i - 1));
+    const n = Math.max(0, currentStepIndex - 1);
+    setCurrentStepIndex(n);
+    onStepIndexChange?.(n);
   };
 
   const reloadAttendanceBlock = async (block) => {
@@ -913,6 +1522,37 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
   const customerFeedbackParsed = useMemo(
     () => (customerFeedback ? parseCustomerFeedbackRecord(customerFeedback) : null),
     [customerFeedback],
+  );
+
+  const teamMovementRegister = useMemo(
+    () => normalizeTeamMovementRegister(wizardData.teamMovementRegister, site),
+    [wizardData.teamMovementRegister, site],
+  );
+
+  const patchTeamMovement = useCallback(
+    (partial) => {
+      setWizardData((prev) => ({
+        ...prev,
+        teamMovementRegister: normalizeTeamMovementRegister(
+          { ...normalizeTeamMovementRegister(prev.teamMovementRegister, site), ...partial },
+          site,
+        ),
+      }));
+    },
+    [site],
+  );
+
+  const patchTeamMovementRow = useCallback(
+    (rowIndex, partial) => {
+      setWizardData((prev) => {
+        const cur = normalizeTeamMovementRegister(prev.teamMovementRegister, site);
+        const rows = [...cur.rows];
+        if (rowIndex < 0 || rowIndex >= rows.length) return prev;
+        rows[rowIndex] = { ...rows[rowIndex], ...partial };
+        return { ...prev, teamMovementRegister: normalizeTeamMovementRegister({ ...cur, rows }, site) };
+      });
+    },
+    [site],
   );
 
   if (loading) {
@@ -936,47 +1576,283 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
 
   const intro = wizardData.projectIntroduction || emptyIntroFromSite(site);
   const eng = wizardData.engineeringProcedure || {};
-  const toolChecklist = wizardData.toolChecklist || { categories: defaultToolCategories() };
   const cert = wizardData.certificateDraft || {};
+
+  const introPeRows = intro.proposedEquipment || [];
+  const wfIntroPe = workflowTableFilters.intro_pe || { search: "", cols: {} };
+  const introPeIdx = filterRowIndices(introPeRows, wfIntroPe, [(r) => r.text], { text: (r) => r.text });
+
+  const introDimRows = intro.dimensionalRows || [];
+  const wfIntroDim = workflowTableFilters.intro_dim || { search: "", cols: {} };
+  const introDimIdx = filterRowIndices(introDimRows, wfIntroDim, [(r) => r.activity, (r) => r.dimensions, (r) => r.description], {
+    activity: (r) => r.activity,
+    dimensions: (r) => r.dimensions,
+    description: (r) => r.description,
+  });
+
+  const introMobRows = intro.mobilization || [];
+  const wfIntroMob = workflowTableFilters.intro_mob || { search: "", cols: {} };
+  const introMobIdx = filterRowIndices(introMobRows, wfIntroMob, [(r) => r.activity, (r) => r.date], {
+    activity: (r) => r.activity,
+    date: (r) => r.date,
+  });
+
+  const introTmRows = intro.teamMembers || [];
+  const wfIntroTm = workflowTableFilters.intro_team || { search: "", cols: {} };
+  const introTmIdx = filterRowIndices(introTmRows, wfIntroTm, [(r) => r.name], { name: (r) => String(r.name ?? "").trim() });
+
+  const engRowsList = eng.rows || [];
+  const wfEng = workflowTableFilters.eng_schedule || { search: "", cols: {} };
+  const engIdx = filterRowIndices(
+    engRowsList,
+    wfEng,
+    [(r) => r.activity, (r) => r.day, (r) => r.targetTime, (r) => r.actualTime, (r) => r.reasonDelay],
+    {
+      activity: (r) => r.activity,
+      day: (r) => r.day,
+      targetTime: (r) => r.targetTime,
+      actualTime: (r) => r.actualTime,
+      reasonDelay: (r) => r.reasonDelay,
+    },
+  );
+
+  const ADVANCE_FILTER_FIELDS = [
+    "dateAdvanceReceived",
+    "openingBalance",
+    "amount",
+    "foodAllow",
+    "conveyance",
+    "medical",
+    "additionalManpower",
+    "welding",
+    "siteExpenses",
+    "balanceInHand",
+    "dispersionDetails",
+  ];
+  const wfAdv = workflowTableFilters.expense_advance || { search: "", cols: {} };
+  const advMatchers = Object.fromEntries(ADVANCE_FILTER_FIELDS.map((k) => [k, (r) => String(r[k] ?? "").trim()]));
+  const advSearchFns = ADVANCE_FILTER_FIELDS.map((k) => (r) => r[k]);
+  const advIdx = filterRowIndices(advanceLines, wfAdv, advSearchFns, advMatchers);
+
+  const wfTech = workflowTableFilters.expense_technician || { search: "", cols: {} };
+  const techColMatchers = {
+    technicianName: (r) => String(r.technicianName ?? "").trim(),
+    totalPayment: (r) => String(r.totalPayment ?? "").trim(),
+  };
+  const techSearchFns = [
+    (r) => r.technicianName,
+    (r) => r.totalPayment,
+    ...Array.from({ length: TECHNICIAN_PAYMENT_SLOTS }, (_, pi) => [(r) => r.payments?.[pi]?.date, (r) => r.payments?.[pi]?.amount]).flat(2),
+  ];
+  for (let pi = 0; pi < TECHNICIAN_PAYMENT_SLOTS; pi += 1) {
+    techColMatchers[`pay${pi}_date`] = (r) => String(r.payments?.[pi]?.date ?? "").trim();
+    techColMatchers[`pay${pi}_amount`] = (r) => String(r.payments?.[pi]?.amount ?? "").trim();
+  }
+  const techIdx = filterRowIndices(technicianPaymentLines, wfTech, techSearchFns, techColMatchers);
+
+  const ADVANCE_FILTER_LABELS = {
+    dateAdvanceReceived: "Adv. date",
+    openingBalance: "Open bal.",
+    amount: "Amount",
+    foodAllow: "Food",
+    conveyance: "Convey.",
+    medical: "Medical",
+    additionalManpower: "Add. manp.",
+    welding: "Welding",
+    siteExpenses: "Site exp.",
+    balanceInHand: "Bal.",
+    dispersionDetails: "Notes",
+  };
+  const advanceColumnSpec = ADVANCE_FILTER_FIELDS.map((k) => ({
+    key: k,
+    label: ADVANCE_FILTER_LABELS[k] || k,
+    options: wfDistinctValues(advanceLines, (r) => r[k]),
+  }));
+  const techColumnSpec = [
+    { key: "technicianName", label: "Technician", options: wfDistinctValues(technicianPaymentLines, (r) => r.technicianName) },
+    { key: "totalPayment", label: "Total", options: wfDistinctValues(technicianPaymentLines, (r) => r.totalPayment) },
+    ...Array.from({ length: TECHNICIAN_PAYMENT_SLOTS }, (_, pi) => [
+      {
+        key: `pay${pi}_date`,
+        label: `Pay ${pi + 1} date`,
+        options: wfDistinctValues(technicianPaymentLines, (r) => r.payments?.[pi]?.date),
+      },
+      {
+        key: `pay${pi}_amount`,
+        label: `Pay ${pi + 1} amt`,
+        options: wfDistinctValues(technicianPaymentLines, (r) => r.payments?.[pi]?.amount),
+      },
+    ]).flat(),
+  ];
+
+  const wfToolIssues = workflowTableFilters.tool_issues || { search: "", cols: {} };
+  const toolIssueMatchers = {
+    packingListSlNo: (r) => String(r.packingListSlNo ?? "").trim(),
+    itemDescription: (r) => String(r.itemDescription ?? "").trim(),
+    missingDate: (r) => String(r.missingDate ?? "").trim(),
+    damageDate: (r) => String(r.damageDate ?? "").trim(),
+    repairDate: (r) => String(r.repairDate ?? "").trim(),
+    handledBy: (r) => String(r.handledBy ?? "").trim(),
+    issueDescription: (r) => String(r.issueDescription ?? "").trim(),
+  };
+  const toolIssueSearchFns = Object.values(toolIssueMatchers);
+  const toolIssueIdx = filterRowIndices(toolIssueLines, wfToolIssues, toolIssueSearchFns, toolIssueMatchers);
+
+  const toolIssueColumnSpec = [
+    { key: "packingListSlNo", label: "Pkg Sl.", options: wfDistinctValues(toolIssueLines, (r) => r.packingListSlNo) },
+    { key: "itemDescription", label: "Item", options: wfDistinctValues(toolIssueLines, (r) => r.itemDescription) },
+    { key: "missingDate", label: "Missing", options: wfDistinctValues(toolIssueLines, (r) => r.missingDate) },
+    { key: "damageDate", label: "Damage", options: wfDistinctValues(toolIssueLines, (r) => r.damageDate) },
+    { key: "repairDate", label: "Repair", options: wfDistinctValues(toolIssueLines, (r) => r.repairDate) },
+    { key: "handledBy", label: "Handled by", options: wfDistinctValues(toolIssueLines, (r) => r.handledBy) },
+    { key: "issueDescription", label: "Issue", options: wfDistinctValues(toolIssueLines, (r) => r.issueDescription) },
+  ];
+
+  const wfChallenges = workflowTableFilters.challenge_lines || { search: "", cols: {} };
+  const chMatchers = {
+    headLabel: (r) => String(r.headLabel ?? "").trim(),
+    dateOfIncident: (r) => String(r.dateOfIncident ?? "").trim(),
+    involved: (r) => String(r.involved ?? "").trim(),
+    challengesFaced: (r) => String(r.challengesFaced ?? "").trim(),
+    resolutionStatus: (r) => String(r.resolutionStatus ?? "").trim(),
+  };
+  const challengeIdx = filterRowIndices(challengeLineRows, wfChallenges, Object.values(chMatchers), chMatchers);
+
+  const challengeColumnSpec = [
+    { key: "headLabel", label: "Head", options: wfDistinctValues(challengeLineRows, (r) => r.headLabel) },
+    { key: "dateOfIncident", label: "Incident date", options: wfDistinctValues(challengeLineRows, (r) => r.dateOfIncident) },
+    { key: "involved", label: "Involved", options: wfDistinctValues(challengeLineRows, (r) => r.involved) },
+    { key: "challengesFaced", label: "Challenges", options: wfDistinctValues(challengeLineRows, (r) => r.challengesFaced) },
+    { key: "resolutionStatus", label: "Resolution", options: wfDistinctValues(challengeLineRows, (r) => r.resolutionStatus) },
+  ];
+
+  const wfBehaviour = workflowTableFilters.behaviour_matrix || { search: "", cols: {} };
+  const behaviourIssueIdx = BEHAVIOUR_ISSUE_ROWS.map((_, i) => i).filter((i) => behaviourIssueRowMatchesFilters(i, behaviourState, wfBehaviour));
+
+  const behaviourMemberFilterSpec = behaviourState.members.map((_, mi) => ({
+    key: `m${mi}`,
+    label: `Member ${mi + 1}`,
+    options: [...BEHAVIOUR_CELL_FILTER_OPTS],
+  }));
+
+  const attRegRows = attendanceRegister?.rows || [];
+  const wfAttReg = workflowTableFilters.attendance_register || { search: "", cols: {} };
+  const attRegIdx = filterRowIndices(
+    attRegRows,
+    wfAttReg,
+    [(r) => [r.employeeName, ...((r.dayCodes || []).map((c) => c ?? ""))].join("\t")],
+    { employeeName: (r) => String(r.employeeName ?? "").trim() },
+  );
+
+  const attRegColumnSpec = [
+    { key: "employeeName", label: "Name", options: wfDistinctValues(attRegRows, (r) => r.employeeName) },
+  ];
+
+  const wfSiteAttPortal = workflowTableFilters.site_att_portal || { search: "", cols: {} };
 
   return (
     <section className="dashboard-section site-job-workflow">
-      <div className="site-job-workflow__header">
-        <div>
-          <h2 className="section-title mb-1">Site job workflow</h2>
-          <p className="site-job-workflow__muted mb-0">
-            {site.name} · Step {currentStepIndex + 1} of {STEPS.length}
-          </p>
-        </div>
-        <div className="site-job-workflow__job-box" title="Job code">
-          <div className="small text-muted">JOB CODE</div>
-          <div>{site.jobCode ?? "—"}</div>
-        </div>
-      </div>
-
-      <div className="site-job-workflow__stepper" aria-label="Workflow steps">
-        {STEPS.map((s, i) => (
-          <button
-            key={s.id}
-            type="button"
-            className={`site-job-workflow__step-pill ${i === currentStepIndex ? "site-job-workflow__step-pill--active" : ""} ${
-              i < currentStepIndex ? "site-job-workflow__step-pill--done" : ""
-            }`}
-            aria-current={i === currentStepIndex ? "step" : undefined}
-            title={`Go to step ${i + 1}: ${s.title}`}
-            onClick={() => setCurrentStepIndex(i)}
-          >
-            {i + 1}. {s.title}
+      <nav className="site-job-workflow__breadcrumb" aria-label="Breadcrumb">
+        <button type="button" className="site-job-workflow__crumb site-job-workflow__crumb--btn" onClick={onExit}>
+          Admin home
+        </button>
+        <span className="site-job-workflow__crumb-sep" aria-hidden>
+          /
+        </span>
+        {typeof onNavigateSitesList === "function" ? (
+          <button type="button" className="site-job-workflow__crumb site-job-workflow__crumb--btn" onClick={onNavigateSitesList}>
+            Sites
           </button>
-        ))}
-      </div>
+        ) : (
+          <span className="site-job-workflow__crumb">Sites</span>
+        )}
+        <span className="site-job-workflow__crumb-sep" aria-hidden>
+          /
+        </span>
+        <span className="site-job-workflow__crumb site-job-workflow__crumb--current">{site.name}</span>
+        <span className="site-job-workflow__crumb-sep" aria-hidden>
+          /
+        </span>
+        <span className="site-job-workflow__crumb site-job-workflow__crumb--current">Site job workflow</span>
+      </nav>
 
-      {error ? <div className="alert alert-danger py-2 mb-3">{error}</div> : null}
+      <div className="site-job-workflow__shell-card site-job-workflow__panel border rounded-3 shadow-sm">
+        <div className="site-job-workflow__shell-meta">
+          <div className="min-w-0">
+            <h2 className="site-job-workflow__shell-title mb-1">Site job workflow</h2>
+            <p className="site-job-workflow__muted mb-0 small text-truncate" title={site.name}>
+              {site.name}
+              {site.jobCode ? ` · ${site.jobCode}` : ""} · Step {currentStepIndex + 1} of {STEPS.length}
+            </p>
+          </div>
+          <div className="site-job-workflow__job-box site-job-workflow__job-box--shell flex-shrink-0" title="Job code">
+            <div className="small text-muted">JOB CODE</div>
+            <div>{site.jobCode ?? "—"}</div>
+          </div>
+        </div>
 
-      <div className="site-job-workflow__step-panel">
+        <div className="site-job-workflow__tab-scroll-wrap">
+          <button
+            type="button"
+            className="site-job-workflow__tab-scroll-btn"
+            aria-label="Scroll steps left"
+            onClick={() => primaryTabsRef.current?.scrollBy({ left: -220, behavior: "smooth" })}
+          >
+            ‹
+          </button>
+          <div ref={primaryTabsRef} className="site-job-workflow__primary-tabs" role="tablist" aria-label="Workflow steps">
+            {STEPS.map((s, i) => (
+              <button
+                key={s.id}
+                type="button"
+                role="tab"
+                aria-selected={i === currentStepIndex}
+                className={`site-job-workflow__primary-tab ${i === currentStepIndex ? "site-job-workflow__primary-tab--active" : ""} ${
+                  i < currentStepIndex ? "site-job-workflow__primary-tab--done" : ""
+                }`}
+                title={`Step ${i + 1}: ${s.title}`}
+                onClick={() => {
+                  setCurrentStepIndex(i);
+                  onStepIndexChange?.(i);
+                }}
+              >
+                <span className="site-job-workflow__primary-tab-num">{i + 1}</span>
+                <span className="site-job-workflow__primary-tab-label">{s.title}</span>
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="site-job-workflow__tab-scroll-btn"
+            aria-label="Scroll steps right"
+            onClick={() => primaryTabsRef.current?.scrollBy({ left: 220, behavior: "smooth" })}
+          >
+            ›
+          </button>
+        </div>
+
+        {error ? <div className="alert alert-danger py-2 mb-0 mx-3 mt-2">{error}</div> : null}
+
+        <div className="site-job-workflow__step-panel site-job-workflow__step-panel--padded">
+          <button
+            type="button"
+            className="site-job-workflow__section-bar site-job-workflow__section-bar--page"
+            onClick={() => setStepShellCollapsed((c) => !c)}
+            aria-expanded={!stepShellCollapsed}
+          >
+            <span>
+              Step {currentStepIndex + 1}: {STEPS[currentStepIndex].title}
+            </span>
+            <span className="site-job-workflow__section-bar-chevron" aria-hidden>
+              {stepShellCollapsed ? "▼" : "▲"}
+            </span>
+          </button>
+
+          {!stepShellCollapsed ? (
+            <>
       {currentStepIndex === 0 && (
         <div>
-          <h3 className="site-job-workflow__form-title">Project introduction</h3>
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Project introduction</div>
           <table className="site-job-workflow__paper-table">
             <tbody>
               <tr>
@@ -1038,7 +1914,15 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               </tr>
             </tbody>
           </table>
-          <h4 className="h6 fw-bold">Proposed equipment</h4>
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Proposed equipment</div>
+          <WorkflowSearchFilterShell
+            drawerTitle="Proposed equipment"
+            search={wfIntroPe.search}
+            onSearchChange={(v) => patchWfFilter("intro_pe", { search: v })}
+            columnSpec={[{ key: "text", label: "Description", options: wfDistinctValues(introPeRows, (r) => r.text) }]}
+            cols={wfIntroPe.cols || {}}
+            onApplyColumnFilters={(c) => patchWfFilter("intro_pe", { cols: c, replaceCols: true })}
+          />
           <div className="site-job-workflow__scroll">
             <table className="site-job-workflow__paper-table site-job-workflow__stack-mobile">
               <thead>
@@ -1051,7 +1935,9 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                 </tr>
               </thead>
               <tbody>
-                {intro.proposedEquipment?.map((row, idx) => (
+                {introPeIdx.map((idx) => {
+                  const row = introPeRows[idx];
+                  return (
                   <tr key={`pe-${idx}`}>
                     <td data-label="Sl.">{idx + 1}</td>
                     <td data-label="Description">
@@ -1082,7 +1968,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                       </button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1099,14 +1986,26 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
           >
             Add equipment row
           </button>
-          <h4 className="h6 fw-bold">Description of the job</h4>
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Description of the job</div>
           <textarea
             className="form-control mb-3"
             rows={2}
             value={intro.jobDescription}
             onChange={(e) => updateWizard({ projectIntroduction: { ...intro, jobDescription: e.target.value } })}
           />
-          <h4 className="h6 fw-bold">Dimensional details</h4>
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Dimensional details</div>
+          <WorkflowSearchFilterShell
+            drawerTitle="Dimensional details"
+            search={wfIntroDim.search}
+            onSearchChange={(v) => patchWfFilter("intro_dim", { search: v })}
+            columnSpec={[
+              { key: "activity", label: "Activity", options: wfDistinctValues(introDimRows, (r) => r.activity) },
+              { key: "dimensions", label: "Dimensions", options: wfDistinctValues(introDimRows, (r) => r.dimensions) },
+              { key: "description", label: "Description", options: wfDistinctValues(introDimRows, (r) => r.description) },
+            ]}
+            cols={wfIntroDim.cols || {}}
+            onApplyColumnFilters={(c) => patchWfFilter("intro_dim", { cols: c, replaceCols: true })}
+          />
           <div className="site-job-workflow__scroll">
             <table className="site-job-workflow__paper-table site-job-workflow__stack-mobile">
               <thead>
@@ -1122,7 +2021,9 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                 </tr>
               </thead>
               <tbody>
-                {intro.dimensionalRows?.map((row, idx) => (
+                {introDimIdx.map((idx) => {
+                  const row = introDimRows[idx];
+                  return (
                   <tr key={`dim-${idx}`}>
                     <td data-label="Sl. No">{idx + 1}</td>
                     <td data-label="Activity">
@@ -1196,7 +2097,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                       </button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1221,7 +2123,18 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
           </button>
           <div className="row g-2">
             <div className="col-md-6">
-              <h4 className="h6 fw-bold">Mobilization schedule</h4>
+              <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Mobilization schedule</div>
+              <WorkflowSearchFilterShell
+                drawerTitle="Mobilization schedule"
+                search={wfIntroMob.search}
+                onSearchChange={(v) => patchWfFilter("intro_mob", { search: v })}
+                columnSpec={[
+                  { key: "activity", label: "Activity", options: wfDistinctValues(introMobRows, (r) => r.activity) },
+                  { key: "date", label: "Date", options: wfDistinctValues(introMobRows, (r) => r.date) },
+                ]}
+                cols={wfIntroMob.cols || {}}
+                onApplyColumnFilters={(c) => patchWfFilter("intro_mob", { cols: c, replaceCols: true })}
+              />
               <div className="site-job-workflow__scroll">
                 <table className="site-job-workflow__paper-table site-job-workflow__stack-mobile">
                   <thead>
@@ -1235,7 +2148,9 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {intro.mobilization?.map((row, idx) => (
+                    {introMobIdx.map((idx) => {
+                      const row = introMobRows[idx];
+                      return (
                       <tr key={`mob-${idx}`}>
                         <td data-label="Sl.">{String(idx + 1).padStart(2, "0")}</td>
                         <td data-label="Activity">
@@ -1278,7 +2193,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                           </button>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1297,10 +2213,18 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               </button>
             </div>
             <div className="col-md-6">
-              <h4 className="h6 fw-bold">Site team members</h4>
+              <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Site team members</div>
               <p className="site-job-workflow__muted small mb-1">
                 Pick a user from the directory (same users as User Management, up to {USER_DIRECTORY_PAGE_SIZE} loaded), or choose Unlink to type a custom name.
               </p>
+              <WorkflowSearchFilterShell
+                drawerTitle="Site team members"
+                search={wfIntroTm.search}
+                onSearchChange={(v) => patchWfFilter("intro_team", { search: v })}
+                columnSpec={[{ key: "name", label: "Member name", options: wfDistinctValues(introTmRows, (r) => r.name) }]}
+                cols={wfIntroTm.cols || {}}
+                onApplyColumnFilters={(c) => patchWfFilter("intro_team", { cols: c, replaceCols: true })}
+              />
               <div className="site-job-workflow__scroll">
                 <table className="site-job-workflow__paper-table site-job-workflow__stack-mobile">
                   <thead>
@@ -1313,7 +2237,9 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {intro.teamMembers?.map((row, idx) => (
+                    {introTmIdx.map((idx) => {
+                      const row = introTmRows[idx];
+                      return (
                       <tr key={`tm-${idx}`}>
                         <td data-label="Sl.">{String(idx + 1).padStart(2, "0")}</td>
                         <td data-label="Member">
@@ -1391,7 +2317,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                           </button>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1415,7 +2342,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
 
       {currentStepIndex === 1 && (
         <div>
-          <h3 className="site-job-workflow__form-title">Engineering procedure</h3>
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Engineering procedure</div>
           <div className="d-flex flex-wrap gap-3 mb-2 align-items-end">
             <div>
               <label className="form-label small mb-0">Target schedule (days)</label>
@@ -1438,6 +2365,20 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               </p>
             </div>
           </div>
+          <WorkflowSearchFilterShell
+            drawerTitle="Engineering procedure"
+            search={wfEng.search}
+            onSearchChange={(v) => patchWfFilter("eng_schedule", { search: v })}
+            columnSpec={[
+              { key: "activity", label: "Activity", options: wfDistinctValues(engRowsList, (r) => r.activity) },
+              { key: "day", label: "Day", options: wfDistinctValues(engRowsList, (r) => r.day) },
+              { key: "targetTime", label: "Target time", options: wfDistinctValues(engRowsList, (r) => r.targetTime) },
+              { key: "actualTime", label: "Actual time", options: wfDistinctValues(engRowsList, (r) => r.actualTime) },
+              { key: "reasonDelay", label: "Reason delay", options: wfDistinctValues(engRowsList, (r) => r.reasonDelay) },
+            ]}
+            cols={wfEng.cols || {}}
+            onApplyColumnFilters={(c) => patchWfFilter("eng_schedule", { cols: c, replaceCols: true })}
+          />
           <div className="site-job-workflow__scroll">
             <table className="site-job-workflow__paper-table site-job-workflow__stack-mobile">
               <thead>
@@ -1454,7 +2395,9 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                 </tr>
               </thead>
               <tbody>
-                {(eng.rows || []).map((row, idx) => (
+                {engIdx.map((idx) => {
+                  const row = engRowsList[idx];
+                  return (
                   <tr key={`eng-row-${idx}`}>
                     <td data-label="Sl.No.">{idx + 1}</td>
                     <td data-label="Activity">
@@ -1529,7 +2472,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                       </button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1561,11 +2505,24 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
 
       {currentStepIndex === 2 && (
         <div>
-          <h3 className="site-job-workflow__form-title">Daily checklist — tools (by category)</h3>
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Daily checklist — tools (by category)</div>
           <p className="site-job-workflow__muted mb-2">
-            Month grid: days <strong>01–15</strong> and <strong>16–31</strong> (same layout as the paper form). The heading above the numbered columns comes from{" "}
-            <strong>Tools checklist month</strong> on Project introduction, or the current calendar month if that field is left blank.
+            Data is loaded and saved with <strong>GET/PUT …/job-data/equipment-portal</strong>. Reorder rows or move them between sections by dragging the{" "}
+            <strong>⋮⋮</strong> handle — when everything has been saved once (numeric IDs), order syncs with <strong>PUT …/equipment-portal/layout</strong>. The month for day columns follows{" "}
+            <strong>Tools checklist month</strong> on Project introduction (YYYY-MM), or the current calendar month when blank.
           </p>
+          {equipmentPortalLoadError ? (
+            <div className="alert alert-warning py-2 small mb-2" role="status">
+              {equipmentPortalLoadError}
+              {!equipmentPortal ? (
+                <div className="mt-2">
+                  <button type="button" className="btn btn-outline-primary btn-sm" onClick={() => refetchEquipmentPortal()}>
+                    Retry loading checklist
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <div className="btn-group btn-group-sm mb-2" role="group" aria-label="Which half of the month">
             <button
               type="button"
@@ -1585,109 +2542,262 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
           <p className="site-job-workflow__muted small mb-3">
             Tick the checkbox for a day when the item was <strong>physically available on site</strong>. Use the Date column to pick an inspection or calibration date from the calendar (optional).
           </p>
-          {(() => {
-            const toolsMonthHeading =
-              formatYearMonthHeading(intro.toolsChecklistMonth) || formatYearMonthHeading(currentYearMonth());
-            const blockCols = toolDayBlockLength(toolDayBlock);
-            const markStart = toolDayBlockStartCol(toolDayBlock);
-            return toolChecklist.categories?.map((cat, ci) => (
-              <div key={cat.key} className="mb-4">
-                <div className="site-job-workflow__category-row">
-                  <table className="site-job-workflow__paper-table mb-0">
-                    <tbody>
-                      <tr className="site-job-workflow__category-row">
-                        <td colSpan={6 + blockCols}>
-                          {cat.key}. {cat.label}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-                <div className="site-job-workflow__scroll">
-                  <table className="site-job-workflow__paper-table site-job-workflow__stack-mobile">
-                    <thead>
-                      <tr>
-                        <th colSpan={5} />
-                        <th colSpan={blockCols} className="text-center site-job-workflow__month-banner">
-                          {toolsMonthHeading}
-                        </th>
-                      </tr>
-                      <tr>
-                        <th>Sl.</th>
-                        <th>Item description</th>
-                        <th>UOM</th>
-                        <th>Qty</th>
-                        <th>Date</th>
-                        {Array.from({ length: blockCols }, (_, d) => (
-                          <th key={d} className="site-job-workflow__day-cell">
-                            {String(calendarDayForCell(toolDayBlock, d)).padStart(2, "0")}
+          {!equipmentPortal ? (
+            <p className="text-muted small">Loading equipment checklist…</p>
+          ) : (
+            (() => {
+              const ep = equipmentPortal;
+              const toolsMonthHeading =
+                ep.year != null && ep.month != null
+                  ? formatYearMonthHeading(`${ep.year}-${String(ep.month).padStart(2, "0")}`)
+                  : formatYearMonthHeading(intro.toolsChecklistMonth) || formatYearMonthHeading(currentYearMonth());
+              const blockCols = toolDayBlockLength(toolDayBlock);
+              const markStart = toolDayBlockStartCol(toolDayBlock);
+              const categories = ep.categories || [];
+              if (categories.length === 0) {
+                return (
+                  <div className="border rounded p-3 mb-4 bg-body-secondary">
+                    <p className="mb-2 fw-semibold">No checklist sections yet</p>
+                    <p className="small text-muted mb-3">
+                      The equipment portal returned no categories for this site (first visit or empty save). The tables below are only the{" "}
+                      <strong>machinery catalog</strong> — not the daily checklist grid. Add sections here, then use <strong>Save &amp; next</strong> to store them on the server.
+                    </p>
+                    <ul className="small mb-3">
+                      <li>
+                        <strong>Add default sections</strong> — creates the usual <strong>A–K</strong> blocks (one blank row each), same layout as the paper form, so{" "}
+                        <strong>Import machinery</strong> can place rows (machinery must have <strong>Tools checklist category A–K</strong> set — yours may show &quot;—&quot; until you edit them in Admin → Machinery).
+                      </li>
+                      <li>
+                        <strong>Add category</strong> — one custom section; use a title like <code>A. My tools</code> if you want imports to match letter <code>A</code>.
+                      </li>
+                    </ul>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm me-2"
+                      onClick={() => {
+                        setEquipmentPortal((prev) => {
+                          if (!prev) return prev;
+                          return { ...prev, categories: buildDefaultEquipmentPortalTemplateCategories() };
+                        });
+                        setToolChecklistActionMessage({
+                          kind: "info",
+                          text: "Default sections added. Fill rows or import machinery, then press “Save & next” to persist.",
+                        });
+                      }}
+                    >
+                      Add default sections (A, B, C, I, J, K)
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-outline-primary btn-sm"
+                      onClick={() => {
+                        setToolChecklistActionMessage({ kind: "", text: "" });
+                        setAddCategoryName("");
+                        setAddCategoryOpen(true);
+                      }}
+                    >
+                      Add one custom category…
+                    </button>
+                  </div>
+                );
+              }
+              return categories.map((cat, ci) => {
+                const items = cat.items || [];
+                const equipmentTableKey = `equipment_ci_${ci}`;
+                const wfEquipmentCat = workflowTableFilters[equipmentTableKey] || { search: "", cols: {} };
+                const equipmentItemMatchers = {
+                  itemDescription: (it) => String(it.itemDescription ?? "").trim(),
+                  uom: (it) => String(it.uom ?? "").trim(),
+                  qty: (it) => String(it.qty ?? "").trim(),
+                  dateNote: (it) => String(it.dateNote ?? "").trim(),
+                };
+                const equipmentItemIdx = filterRowIndices(
+                  items,
+                  wfEquipmentCat,
+                  Object.values(equipmentItemMatchers),
+                  equipmentItemMatchers,
+                );
+                return (
+                <div key={cat.id != null ? `cat-${cat.id}` : `cat-new-${ci}`} className="mb-4">
+                  <div className="site-job-workflow__category-row">
+                    <table className="site-job-workflow__paper-table mb-0">
+                      <tbody>
+                        <tr
+                          className="site-job-workflow__category-row site-job-workflow__equipment-cat-droptarget"
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "move";
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            const parsed = parseEquipmentDnDTransfer(e);
+                            if (!parsed) return;
+                            const { fromCi, fromIi } = parsed;
+                            const nextCats = appendEquipmentItemToCategory(categories, fromCi, fromIi, ci);
+                            void applyEquipmentPortalReorderAndSyncLayout({ ...ep, categories: nextCats });
+                          }}
+                          title="Drop a row here to move it to the end of this section"
+                        >
+                          <td colSpan={6 + blockCols}>{cat.title}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <WorkflowSearchFilterShell
+                    drawerTitle={String(cat.title || "Tools checklist section").trim() || "Tools checklist section"}
+                    search={wfEquipmentCat.search}
+                    onSearchChange={(v) => patchWfFilter(equipmentTableKey, { search: v })}
+                    columnSpec={[
+                      {
+                        key: "itemDescription",
+                        label: "Item",
+                        options: wfDistinctValues(items, (it) => it.itemDescription),
+                      },
+                      { key: "uom", label: "UOM", options: wfDistinctValues(items, (it) => it.uom) },
+                      { key: "qty", label: "Qty", options: wfDistinctValues(items, (it) => it.qty) },
+                      { key: "dateNote", label: "Date note", options: wfDistinctValues(items, (it) => it.dateNote) },
+                    ]}
+                    cols={wfEquipmentCat.cols || {}}
+                    onApplyColumnFilters={(c) => patchWfFilter(equipmentTableKey, { cols: c, replaceCols: true })}
+                  />
+                  <div className="site-job-workflow__scroll">
+                    <table className="site-job-workflow__paper-table">
+                      <thead>
+                        <tr>
+                          <th colSpan={6} />
+                          <th colSpan={blockCols} className="text-center site-job-workflow__month-banner">
+                            {toolsMonthHeading}
                           </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {cat.items?.map((item, ii) => (
-                        <tr key={`${cat.key}-${ii}`}>
-                          <td data-label="Sl.">{ii + 1}</td>
-                          <td data-label="Item description">
-                            <input
-                              value={item.description}
-                              onChange={(e) => {
-                                const categories = [...(toolChecklist.categories || [])];
-                                const items = [...(categories[ci].items || [])];
-                                items[ii] = { ...item, description: e.target.value };
-                                categories[ci] = { ...categories[ci], items };
-                                updateWizard({ toolChecklist: { categories } });
+                        </tr>
+                        <tr>
+                          <th className="site-job-workflow__equipment-dnd-col" scope="col" title="Drag ⋮⋮ on a row to reorder">
+                            {" "}
+                          </th>
+                          <th>Sl.</th>
+                          <th>Item description</th>
+                          <th>UOM</th>
+                          <th>Qty</th>
+                          <th>Date</th>
+                          {Array.from({ length: blockCols }, (_, d) => (
+                            <th key={d} className="site-job-workflow__day-cell">
+                              {String(calendarDayForCell(toolDayBlock, d)).padStart(2, "0")}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {equipmentItemIdx.map((ii) => {
+                          const item = items[ii];
+                          return (
+                          <tr
+                            key={item.id != null ? `item-${item.id}` : `item-${ci}-${ii}`}
+                            className={
+                              equipmentDragKey === `${ci}-${ii}` ? "site-job-workflow__equipment-row--dragging" : undefined
+                            }
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = "move";
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              const parsed = parseEquipmentDnDTransfer(e);
+                              if (!parsed) return;
+                              const { fromCi, fromIi } = parsed;
+                              if (fromCi === ci && fromIi === ii) return;
+                              const nextCats = moveEquipmentItemToIndex(categories, fromCi, fromIi, ci, ii);
+                              void applyEquipmentPortalReorderAndSyncLayout({ ...ep, categories: nextCats });
+                            }}
+                          >
+                            <td
+                              className="site-job-workflow__equipment-dnd-handle"
+                              draggable
+                              title="Drag to reorder or move to another section"
+                              onDragStart={(e) => {
+                                e.stopPropagation();
+                                const payload = JSON.stringify({ fromCi: ci, fromIi: ii });
+                                e.dataTransfer.setData(EQUIPMENT_ROW_DND_MIME, payload);
+                                e.dataTransfer.setData("text/plain", payload);
+                                e.dataTransfer.effectAllowed = "move";
+                                setEquipmentDragKey(`${ci}-${ii}`);
                               }}
-                            />
-                          </td>
-                          <td data-label="UOM">
-                            <input
-                              value={item.uom}
-                              onChange={(e) => {
-                                const categories = [...(toolChecklist.categories || [])];
-                                const items = [...(categories[ci].items || [])];
-                                items[ii] = { ...item, uom: e.target.value };
-                                categories[ci] = { ...categories[ci], items };
-                                updateWizard({ toolChecklist: { categories } });
-                              }}
-                            />
-                          </td>
-                          <td data-label="Qty">
-                            <input
-                              value={item.qty}
-                              onChange={(e) => {
-                                const categories = [...(toolChecklist.categories || [])];
-                                const items = [...(categories[ci].items || [])];
-                                items[ii] = { ...item, qty: e.target.value };
-                                categories[ci] = { ...categories[ci], items };
-                                updateWizard({ toolChecklist: { categories } });
-                              }}
-                            />
-                          </td>
-                          <td data-label="Date">
-                            <input
-                              type="date"
-                              className="form-control form-control-sm"
-                              value={coerceToolItemDateToIsoInput(item.itemDate)}
-                              onChange={(e) => {
-                                const categories = [...(toolChecklist.categories || [])];
-                                const items = [...(categories[ci].items || [])];
-                                items[ii] = { ...item, itemDate: e.target.value };
-                                categories[ci] = { ...categories[ci], items };
-                                updateWizard({ toolChecklist: { categories } });
-                              }}
-                            />
-                          </td>
-                          {padMarksForMonth(item.marks)
-                            .slice(markStart, markStart + blockCols)
-                            .map((mark, di) => {
+                              onDragEnd={() => setEquipmentDragKey(null)}
+                            >
+                              ⋮⋮
+                            </td>
+                            <td>{ii + 1}</td>
+                            <td>
+                              <input
+                                value={item.itemDescription ?? ""}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  setEquipmentPortal((prev) => {
+                                    if (!prev) return prev;
+                                    const nextCats = [...(prev.categories || [])];
+                                    const items = [...(nextCats[ci].items || [])];
+                                    items[ii] = { ...items[ii], itemDescription: v };
+                                    nextCats[ci] = { ...nextCats[ci], items };
+                                    return { ...prev, categories: nextCats };
+                                  });
+                                }}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                value={item.uom ?? ""}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  setEquipmentPortal((prev) => {
+                                    if (!prev) return prev;
+                                    const nextCats = [...(prev.categories || [])];
+                                    const items = [...(nextCats[ci].items || [])];
+                                    items[ii] = { ...items[ii], uom: v };
+                                    nextCats[ci] = { ...nextCats[ci], items };
+                                    return { ...prev, categories: nextCats };
+                                  });
+                                }}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                value={item.qty ?? ""}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  setEquipmentPortal((prev) => {
+                                    if (!prev) return prev;
+                                    const nextCats = [...(prev.categories || [])];
+                                    const items = [...(nextCats[ci].items || [])];
+                                    items[ii] = { ...items[ii], qty: v };
+                                    nextCats[ci] = { ...nextCats[ci], items };
+                                    return { ...prev, categories: nextCats };
+                                  });
+                                }}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                value={item.dateNote ?? ""}
+                                placeholder="e.g. 22.09.24"
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  setEquipmentPortal((prev) => {
+                                    if (!prev) return prev;
+                                    const nextCats = [...(prev.categories || [])];
+                                    const items = [...(nextCats[ci].items || [])];
+                                    items[ii] = { ...items[ii], dateNote: v.trim() === "" ? null : v };
+                                    nextCats[ci] = { ...nextCats[ci], items };
+                                    return { ...prev, categories: nextCats };
+                                  });
+                                }}
+                              />
+                            </td>
+                            {Array.from({ length: blockCols }, (_, di) => {
                               const globalIdx = markStart + di;
-                              const dayNum = calendarDayForCell(toolDayBlock, di);
-                              const checked = String(mark ?? "").trim() === "✓";
+                              const dayNum = globalIdx + 1;
+                              const dayKey = String(dayNum);
+                              const checked = Boolean(item.dayPresent && item.dayPresent[dayKey]);
                               return (
                                 <td
-                                  key={`${cat.key}-${ii}-d-${globalIdx}`}
+                                  key={`${cat.id ?? ci}-${ii}-d-${globalIdx}`}
                                   className="site-job-workflow__day-cell"
                                   data-label={`Day ${String(dayNum).padStart(2, "0")} (${toolsMonthHeading})`}
                                 >
@@ -1697,52 +2807,98 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                                     checked={checked}
                                     title={`Day ${String(dayNum).padStart(2, "0")} — tick if available`}
                                     onChange={(e) => {
-                                      const categories = [...(toolChecklist.categories || [])];
-                                      const items = [...(categories[ci].items || [])];
-                                      const marks = padMarksForMonth(items[ii].marks);
-                                      marks[globalIdx] = e.target.checked ? "✓" : "";
-                                      items[ii] = { ...items[ii], marks };
-                                      categories[ci] = { ...categories[ci], items };
-                                      updateWizard({ toolChecklist: { categories } });
+                                      const on = e.target.checked;
+                                      setEquipmentPortal((prev) => {
+                                        if (!prev) return prev;
+                                        const nextCats = [...(prev.categories || [])];
+                                        const items = [...(nextCats[ci].items || [])];
+                                        const cur = items[ii];
+                                        const nextDp = { ...(cur.dayPresent && typeof cur.dayPresent === "object" ? cur.dayPresent : {}) };
+                                        if (on) nextDp[dayKey] = true;
+                                        else delete nextDp[dayKey];
+                                        items[ii] = { ...cur, dayPresent: nextDp };
+                                        nextCats[ci] = { ...nextCats[ci], items };
+                                        return { ...prev, categories: nextCats };
+                                      });
                                     }}
                                   />
                                 </td>
                               );
                             })}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                          </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-outline-secondary btn-sm mt-1"
+                    onClick={() => {
+                      setEquipmentPortal((prev) => {
+                        if (!prev) return prev;
+                        const nextCats = [...(prev.categories || [])];
+                        const items = [...(nextCats[ci].items || [])];
+                        items.push(emptyEquipmentPortalItem(items.length));
+                        nextCats[ci] = { ...nextCats[ci], items };
+                        return { ...prev, categories: nextCats };
+                      });
+                    }}
+                  >
+                    Add row in {String(cat.title || "category").replace(/^.\.\s*/, "")}
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  className="btn btn-outline-secondary btn-sm mt-1"
-                  onClick={() => {
-                    const categories = [...(toolChecklist.categories || [])];
-                    const items = [...(categories[ci].items || [])];
-                    const nextSl = items.length + 1;
-                    items.push(emptyItem(nextSl));
-                    categories[ci] = { ...categories[ci], items };
-                    updateWizard({ toolChecklist: { categories } });
-                  }}
-                >
-                  Add row in {cat.label}
-                </button>
-              </div>
-            ));
-          })()}
-          <h4 className="h6 fw-bold mt-3">Machinery catalog (this site)</h4>
+              );
+              });
+            })()
+          )}
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static mt-3">Machinery catalog (this site)</div>
           <p className="site-job-workflow__muted small mb-2">
-            In <strong>Machinery</strong>, set <strong>Tools checklist category</strong> when adding a machine so it can be pulled into the correct block below. New
-            categories you add here are saved with this site&apos;s wizard only (no separate backend API).
+            In <strong>Machinery</strong>, set <strong>Tools checklist category</strong> (A–K) so imports match portal sections whose title starts with that letter (e.g.{" "}
+            <strong>A.</strong>). New categories and rows below are persisted when you use <strong>Save &amp; next</strong> (equipment portal PUT).
           </p>
           {machineryByCategory.length === 0 ? (
             <p className="text-muted small">No machinery rows for this site.</p>
           ) : (
-            machineryByCategory.map(([label, rows]) => (
+            machineryByCategory.map(([label, rows], mi) => {
+              const machineryTableKey = `machinery_${mi}`;
+              const wfMachinery = workflowTableFilters[machineryTableKey] || { search: "", cols: {} };
+              const machineryMatchers = {
+                code: (m) => String(m.code ?? "").trim(),
+                name: (m) => String(m.name ?? "").trim(),
+                defaultUom: (m) => String(m.defaultUom ?? "").trim(),
+                status: (m) => String(m.status ?? "").trim(),
+                checklist: (m) => {
+                  const ck = getMachineryChecklistKey(m);
+                  return ck ? `${ck} (${CHECKLIST_KEY_TO_LABEL[ck] ?? ck})` : "";
+                },
+              };
+              const machineryIdx = filterRowIndices(rows, wfMachinery, Object.values(machineryMatchers), machineryMatchers);
+              return (
               <div key={label} className="mb-2">
                 <div className="fw-bold small text-uppercase mb-1">{label}</div>
-                <table className="site-job-workflow__paper-table site-job-workflow__stack-mobile">
+                <WorkflowSearchFilterShell
+                  drawerTitle={`Machinery — ${label}`}
+                  search={wfMachinery.search}
+                  onSearchChange={(v) => patchWfFilter(machineryTableKey, { search: v })}
+                  columnSpec={[
+                    { key: "code", label: "Code", options: wfDistinctValues(rows, (m) => m.code) },
+                    { key: "name", label: "Name", options: wfDistinctValues(rows, (m) => m.name) },
+                    { key: "defaultUom", label: "UOM", options: wfDistinctValues(rows, (m) => m.defaultUom) },
+                    { key: "status", label: "Status", options: wfDistinctValues(rows, (m) => m.status) },
+                    {
+                      key: "checklist",
+                      label: "Checklist",
+                      options: wfDistinctValues(rows, (m) => {
+                        const ck = getMachineryChecklistKey(m);
+                        return ck ? `${ck} (${CHECKLIST_KEY_TO_LABEL[ck] ?? ck})` : "";
+                      }),
+                    },
+                  ]}
+                  cols={wfMachinery.cols || {}}
+                  onApplyColumnFilters={(c) => patchWfFilter(machineryTableKey, { cols: c, replaceCols: true })}
+                />
+                <table className="site-job-workflow__paper-table">
                   <thead>
                     <tr>
                       <th>Code</th>
@@ -1753,7 +2909,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map((m) => {
+                    {machineryIdx.map((ri) => {
+                      const m = rows[ri];
                       const ck = getMachineryChecklistKey(m);
                       return (
                         <tr key={m.id}>
@@ -1768,7 +2925,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                   </tbody>
                 </table>
               </div>
-            ))
+              );
+            })
           )}
           <div className="d-flex flex-wrap gap-2 mt-2">
             {toolChecklistActionMessage.text ? (
@@ -1788,7 +2946,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
             {addCategoryOpen ? (
               <div className="w-100 border rounded p-2 mb-1 bg-body-secondary">
                 <label className="form-label small mb-1 fw-semibold" htmlFor="site-job-new-tool-category-name">
-                  New section name
+                  New section title
                 </label>
                 <div className="d-flex flex-wrap gap-2 align-items-center">
                   <input
@@ -1798,7 +2956,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                     className="form-control form-control-sm"
                     style={{ maxWidth: "18rem" }}
                     value={addCategoryName}
-                    placeholder="e.g. Power tools"
+                    placeholder="e.g. A. Power tools"
                     onChange={(e) => setAddCategoryName(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === "Escape") {
@@ -1811,18 +2969,23 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                     type="button"
                     className="btn btn-primary btn-sm"
                     onClick={() => {
-                      const categories = [...(toolChecklist.categories || [])];
-                      const key = nextToolCategoryKey(categories);
+                      if (!equipmentPortal) return;
                       const label = String(addCategoryName).trim() || "New category";
-                      categories.push({ key, label, items: [emptyItem(1)] });
-                      updateWizard({ toolChecklist: { categories } });
+                      const categories = [...(equipmentPortal.categories || [])];
+                      categories.push({
+                        id: null,
+                        title: label,
+                        sortOrder: categories.length,
+                        items: [emptyEquipmentPortalItem(0)],
+                      });
+                      setEquipmentPortal({ ...equipmentPortal, categories });
                       setAddCategoryOpen(false);
                       setAddCategoryName("");
                       setToolChecklistActionMessage({
                         kind: "success",
-                        text: `Added section “${key}. ${label}”. Scroll up to see it, then use “Save & next” to persist.`,
+                        text: `Added section “${label}”. Use “Save & next” to persist to the server.`,
                       });
-                      showSuccess?.(`Added section “${key}. ${label}”.`);
+                      showSuccess?.(`Added section “${label}”.`);
                     }}
                   >
                     Create section
@@ -1844,6 +3007,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               <button
                 type="button"
                 className="btn btn-outline-primary btn-sm"
+                disabled={!equipmentPortal}
                 onClick={() => {
                   setToolChecklistActionMessage({ kind: "", text: "" });
                   setAddCategoryName("");
@@ -1856,30 +3020,23 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
             <button
               type="button"
               className="btn btn-primary btn-sm"
+              disabled={!equipmentPortal}
               onClick={() => {
+                if (!equipmentPortal) return;
                 let added = 0;
-                const categories = [...(toolChecklist.categories || [])];
+                const categories = [...(equipmentPortal.categories || [])];
                 for (const m of machineryList) {
                   const ck = getMachineryChecklistKey(m);
                   if (!ck) continue;
-                  const cix = categories.findIndex((c) => c.key === ck);
+                  const cix = findEquipmentCategoryIndexForMachineryKey(categories, ck);
                   if (cix < 0) continue;
                   const items = [...(categories[cix].items || [])];
-                  const mid = m.id ?? m.machineryId;
-                  if (
-                    mid != null &&
-                    items.some((it) => it.machineryCatalogId != null && Number(it.machineryCatalogId) === Number(mid))
-                  ) {
-                    continue;
-                  }
+                  const lineDesc = [m.code, m.name].filter(Boolean).join(" — ");
+                  if (items.some((it) => String(it.itemDescription ?? "").trim() === lineDesc.trim())) continue;
                   items.push({
-                    slNo: items.length + 1,
-                    description: [m.code, m.name].filter(Boolean).join(" — "),
+                    ...emptyEquipmentPortalItem(items.length),
+                    itemDescription: lineDesc,
                     uom: m.defaultUom || "",
-                    qty: "",
-                    itemDate: "",
-                    machineryCatalogId: mid,
-                    marks: Array(TOOL_MARK_DAYS).fill(""),
                   });
                   categories[cix] = { ...categories[cix], items };
                   added += 1;
@@ -1888,12 +3045,12 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                   const msg =
                     machineryList.length === 0
                       ? "No machinery loaded for this site. Add machines under Admin → Machinery, then set each machine’s “Tools checklist category” to A–K before importing."
-                      : 'No new lines added. Each machine needs a checklist letter (A, B, C, I, J, or K) in Machinery — yours show "—". Edit the machine, pick a category, save, then try again.';
+                      : 'No new lines added. Each machine needs a checklist letter (A, B, C, I, J, or K), and the portal needs a category whose title starts with that letter (e.g. “A. …”).';
                   setToolChecklistActionMessage({ kind: "warning", text: msg });
                   return;
                 }
-                updateWizard({ toolChecklist: { categories } });
-                const msg = `Added ${added} machinery line(s) under their checklist categories. Scroll up to see new rows. Use “Save & next” to persist.`;
+                setEquipmentPortal({ ...equipmentPortal, categories });
+                const msg = `Added ${added} machinery line(s). Use “Save & next” to persist.`;
                 setToolChecklistActionMessage({ kind: "success", text: msg });
                 showSuccess?.(`Added ${added} machinery line(s) under their checklist categories.`);
               }}
@@ -1906,13 +3063,13 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
 
       {currentStepIndex === 3 && (
         <div>
-          <h3 className="site-job-workflow__form-title">Site advance received &amp; paid</h3>
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Site advance received &amp; paid</div>
           <p className="site-job-workflow__muted small mb-2">
             Matches the paper register. Saved with{" "}
             <strong>PUT /api/admin/sites/&#123;id&#125;/job-data/advance-expense-lines</strong> and{" "}
             <strong>technician-payments</strong> as JSON arrays when you use <strong>Save &amp; next</strong>.
           </p>
-          <h4 className="h6 fw-bold mt-2">Details of dispersion of expenses</h4>
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Details of dispersion of expenses</div>
           <div className="d-flex gap-2 mb-2 align-items-center flex-wrap">
             <button
               type="button"
@@ -1944,6 +3101,14 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               {advanceLines.length} row{advanceLines.length !== 1 ? "s" : ""} (max {WORKFLOW_JOB_TABLE_MAX_ROWS})
             </span>
           </div>
+          <WorkflowSearchFilterShell
+            drawerTitle="Advance expenses"
+            search={wfAdv.search}
+            onSearchChange={(v) => patchWfFilter("expense_advance", { search: v })}
+            columnSpec={advanceColumnSpec}
+            cols={wfAdv.cols || {}}
+            onApplyColumnFilters={(c) => patchWfFilter("expense_advance", { cols: c, replaceCols: true })}
+          />
           <div className="site-job-workflow__scroll mb-4">
             <table className="site-job-workflow__paper-table site-job-workflow__dense-table site-job-workflow__stack-mobile">
               <thead>
@@ -1963,7 +3128,9 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                 </tr>
               </thead>
               <tbody>
-                {advanceLines.map((row, idx) => (
+                {advIdx.map((idx) => {
+                  const row = advanceLines[idx];
+                  return (
                   <tr key={`adv-${row.slNo}`}>
                     <td data-label="Sl.">{row.slNo}</td>
                     {[
@@ -1996,11 +3163,12 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                       </td>
                     ))}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
-          <h4 className="h6 fw-bold">Technician-wise dispersion of funds</h4>
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Technician-wise dispersion of funds</div>
           <p className="site-job-workflow__muted small mb-1">
             Up to {TECHNICIAN_PAYMENT_SLOTS} payment dates per technician; totals are stored as entered.
           </p>
@@ -2035,6 +3203,14 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               {technicianPaymentLines.length} row{technicianPaymentLines.length !== 1 ? "s" : ""}
             </span>
           </div>
+          <WorkflowSearchFilterShell
+            drawerTitle="Technician payments"
+            search={wfTech.search}
+            onSearchChange={(v) => patchWfFilter("expense_technician", { search: v })}
+            columnSpec={techColumnSpec}
+            cols={wfTech.cols || {}}
+            onApplyColumnFilters={(c) => patchWfFilter("expense_technician", { cols: c, replaceCols: true })}
+          />
           <div className="site-job-workflow__scroll mb-2">
             <table className="site-job-workflow__paper-table site-job-workflow__dense-table site-job-workflow__stack-mobile">
               <thead>
@@ -2051,7 +3227,9 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                 </tr>
               </thead>
               <tbody>
-                {technicianPaymentLines.map((row, ri) => (
+                {techIdx.map((ri) => {
+                  const row = technicianPaymentLines[ri];
+                  return (
                   <tr key={`tech-${row.slNo}`}>
                     <td data-label="Sl.">{row.slNo}</td>
                     <td data-label="Technician name" style={{ minWidth: "12rem" }}>
@@ -2165,7 +3343,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                       />
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -2174,7 +3353,187 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
 
       {currentStepIndex === 4 && (
         <div>
-          <h3 className="site-job-workflow__form-title">Tools missing / damage / repair</h3>
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">
+            Site team members movement register
+          </div>
+          <p className="site-job-workflow__muted small mb-3">
+            Matches the paper register. Saved with your workflow via <strong>PUT …/wizard</strong> when you use{" "}
+            <strong>Save &amp; next</strong>.
+          </p>
+          <div className="row g-2 mb-3">
+            <div className="col-12 col-md-6">
+              <label className="form-label small mb-0" htmlFor="tm-customer">
+                Name of the customer
+              </label>
+              <input
+                id="tm-customer"
+                type="text"
+                className="form-control form-control-sm"
+                value={teamMovementRegister.customerName}
+                onChange={(e) => patchTeamMovement({ customerName: e.target.value })}
+              />
+            </div>
+            <div className="col-12 col-md-3">
+              <label className="form-label small mb-0" htmlFor="tm-jobcode">
+                Job code
+              </label>
+              <input
+                id="tm-jobcode"
+                type="text"
+                className="form-control form-control-sm"
+                value={teamMovementRegister.jobCode}
+                onChange={(e) => patchTeamMovement({ jobCode: e.target.value })}
+              />
+            </div>
+            <div className="col-12 col-md-3">
+              <label className="form-label small mb-0" htmlFor="tm-total-days">
+                Total project days
+              </label>
+              <input
+                id="tm-total-days"
+                type="text"
+                className="form-control form-control-sm"
+                value={teamMovementRegister.totalProjectDays}
+                onChange={(e) => patchTeamMovement({ totalProjectDays: e.target.value })}
+              />
+            </div>
+            <div className="col-12 col-md-3">
+              <label className="form-label small mb-0" htmlFor="tm-start">
+                Site start date
+              </label>
+              <input
+                id="tm-start"
+                type="date"
+                className="form-control form-control-sm"
+                value={teamMovementRegister.siteStartDate}
+                onChange={(e) => patchTeamMovement({ siteStartDate: e.target.value })}
+              />
+            </div>
+            <div className="col-12 col-md-3">
+              <label className="form-label small mb-0" htmlFor="tm-finish">
+                Site finish date
+              </label>
+              <input
+                id="tm-finish"
+                type="date"
+                className="form-control form-control-sm"
+                value={teamMovementRegister.siteFinishDate}
+                onChange={(e) => patchTeamMovement({ siteFinishDate: e.target.value })}
+              />
+            </div>
+          </div>
+          <div className="d-flex gap-2 mb-2 align-items-center flex-wrap">
+            <button
+              type="button"
+              className="btn btn-outline-primary btn-sm"
+              disabled={teamMovementRegister.rows.length >= WORKFLOW_JOB_TABLE_MAX_ROWS}
+              onClick={() => {
+                setWizardData((prev) => {
+                  const cur = normalizeTeamMovementRegister(prev.teamMovementRegister, site);
+                  if (cur.rows.length >= WORKFLOW_JOB_TABLE_MAX_ROWS) return prev;
+                  const rows = [...cur.rows, emptyTeamMovementRow(cur.rows.length + 1)];
+                  return { ...prev, teamMovementRegister: normalizeTeamMovementRegister({ ...cur, rows }, site) };
+                });
+              }}
+            >
+              Add row
+            </button>
+            <button
+              type="button"
+              className="btn btn-outline-danger btn-sm"
+              disabled={teamMovementRegister.rows.length <= WORKFLOW_JOB_TABLE_MIN_ROWS}
+              onClick={() => {
+                setWizardData((prev) => {
+                  const cur = normalizeTeamMovementRegister(prev.teamMovementRegister, site);
+                  if (cur.rows.length <= WORKFLOW_JOB_TABLE_MIN_ROWS) return prev;
+                  const rows = cur.rows.slice(0, -1).map((r, i) => ({ ...r, slNo: i + 1 }));
+                  return { ...prev, teamMovementRegister: normalizeTeamMovementRegister({ ...cur, rows }, site) };
+                });
+              }}
+            >
+              Remove last row
+            </button>
+            <span className="site-job-workflow__muted small">
+              {teamMovementRegister.rows.length} row{teamMovementRegister.rows.length !== 1 ? "s" : ""} (default{" "}
+              {TEAM_MOVEMENT_REGISTER_ROW_COUNT})
+            </span>
+          </div>
+          <div className="site-job-workflow__scroll mb-2">
+            <table className="site-job-workflow__paper-table site-job-workflow__dense-table">
+              <thead>
+                <tr>
+                  <th>Sl.No</th>
+                  <th style={{ minWidth: "9rem" }}>Name</th>
+                  <th style={{ minWidth: "8rem" }}>Designation</th>
+                  <th colSpan={2} className="text-center">
+                    Present at site
+                  </th>
+                  <th style={{ minWidth: "12rem" }}>Reasons for absence from site</th>
+                </tr>
+                <tr>
+                  <th aria-hidden />
+                  <th aria-hidden />
+                  <th aria-hidden />
+                  <th className="small">From date</th>
+                  <th className="small">To date</th>
+                  <th aria-hidden />
+                </tr>
+              </thead>
+              <tbody>
+                {teamMovementRegister.rows.map((row, ri) => (
+                  <tr key={`tm-${row.slNo}`}>
+                    <td>{row.slNo}</td>
+                    <td>
+                      <input
+                        type="text"
+                        className="form-control form-control-sm border-0 rounded-0 px-1"
+                        value={row.name}
+                        onChange={(e) => patchTeamMovementRow(ri, { name: e.target.value })}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="text"
+                        className="form-control form-control-sm border-0 rounded-0 px-1"
+                        value={row.designation}
+                        onChange={(e) => patchTeamMovementRow(ri, { designation: e.target.value })}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="date"
+                        className="form-control form-control-sm border-0 rounded-0 px-1"
+                        value={row.presentFromDate}
+                        onChange={(e) => patchTeamMovementRow(ri, { presentFromDate: e.target.value })}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="date"
+                        className="form-control form-control-sm border-0 rounded-0 px-1"
+                        value={row.presentToDate}
+                        onChange={(e) => patchTeamMovementRow(ri, { presentToDate: e.target.value })}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="text"
+                        className="form-control form-control-sm border-0 rounded-0 px-1"
+                        value={row.absenceReason}
+                        onChange={(e) => patchTeamMovementRow(ri, { absenceReason: e.target.value })}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {currentStepIndex === 5 && (
+        <div>
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Tools missing / damage / repair</div>
           <p className="site-job-workflow__muted small mb-2">
             Saved with <strong>PUT .../job-data/tool-issues</strong> as a JSON array.
           </p>
@@ -2207,6 +3566,14 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
             </button>
             <span className="site-job-workflow__muted small">{toolIssueLines.length} row(s)</span>
           </div>
+          <WorkflowSearchFilterShell
+            drawerTitle="Tool issues"
+            search={wfToolIssues.search}
+            onSearchChange={(v) => patchWfFilter("tool_issues", { search: v })}
+            columnSpec={toolIssueColumnSpec}
+            cols={wfToolIssues.cols || {}}
+            onApplyColumnFilters={(c) => patchWfFilter("tool_issues", { cols: c, replaceCols: true })}
+          />
           <div className="site-job-workflow__scroll">
             <table className="site-job-workflow__paper-table site-job-workflow__dense-table site-job-workflow__stack-mobile">
               <thead>
@@ -2222,7 +3589,9 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                 </tr>
               </thead>
               <tbody>
-                {toolIssueLines.map((row, ri) => (
+                {toolIssueIdx.map((ri) => {
+                  const row = toolIssueLines[ri];
+                  return (
                   <tr key={`ti-${row.slNo}`}>
                     <td data-label="Sl.">{row.slNo}</td>
                     {TOOL_ISSUE_CELL_FIELDS_BEFORE.map(([field, typ]) => (
@@ -2317,16 +3686,17 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                       />
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
         </div>
       )}
 
-      {currentStepIndex === 5 && (
+      {currentStepIndex === 6 && (
         <div>
-          <h3 className="site-job-workflow__form-title">Challenges at site</h3>
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Challenges at site</div>
           <p className="site-job-workflow__muted small mb-2">
             One row per challenge head (from <strong>/api/meta/challenge-line-heads</strong> or built-in list). Saved with{" "}
             <strong>PUT .../job-data/challenge-lines</strong>.
@@ -2364,6 +3734,14 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               Remove last added row
             </button>
           </div>
+          <WorkflowSearchFilterShell
+            drawerTitle="Challenges"
+            search={wfChallenges.search}
+            onSearchChange={(v) => patchWfFilter("challenge_lines", { search: v })}
+            columnSpec={challengeColumnSpec}
+            cols={wfChallenges.cols || {}}
+            onApplyColumnFilters={(c) => patchWfFilter("challenge_lines", { cols: c, replaceCols: true })}
+          />
           <div className="site-job-workflow__scroll">
             <table className="site-job-workflow__paper-table site-job-workflow__dense-table site-job-workflow__stack-mobile">
               <thead>
@@ -2378,7 +3756,9 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                 </tr>
               </thead>
               <tbody>
-                {challengeLineRows.map((row, ri) => (
+                {challengeIdx.map((ri) => {
+                  const row = challengeLineRows[ri];
+                  return (
                   <tr key={`ch-${row.headIndex}-${ri}`}>
                     <td data-label="Sl.">{row.headIndex || ri + 1}</td>
                     <td data-label="Heads" className="small">
@@ -2505,16 +3885,17 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                       ) : null}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
         </div>
       )}
 
-      {currentStepIndex === 6 && (
+      {currentStepIndex === 7 && (
         <div>
-          <h3 className="site-job-workflow__form-title">Site behaviour report</h3>
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Site behaviour report</div>
           <p className="site-job-workflow__muted small mb-2">
             Grid: tick and date when an issue applies to a member. Saved with <strong>PUT .../job-data/behaviour-report</strong> as JSON.
           </p>
@@ -2539,6 +3920,18 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               {behaviourState.members.length} member column{behaviourState.members.length !== 1 ? "s" : ""} (max {BEHAVIOUR_MEMBER_MAX})
             </span>
           </div>
+          <WorkflowSearchFilterShell
+            drawerTitle="Site behaviour matrix"
+            search={wfBehaviour.search}
+            onSearchChange={(v) => patchWfFilter("behaviour_matrix", { search: v })}
+            columnSpec={behaviourMemberFilterSpec}
+            cols={wfBehaviour.cols || {}}
+            onApplyColumnFilters={(c) => patchWfFilter("behaviour_matrix", { cols: c, replaceCols: true })}
+          />
+          <p className="site-job-workflow__muted small mb-2">
+            Issue search filters rows. Open <strong>Filter</strong> and expand each <strong>Member</strong> section to filter issues by that member&apos;s cell (Has mark / Has date / Empty). Use{" "}
+            <strong>FILTER</strong> to apply column choices.
+          </p>
           <div className="site-job-workflow__scroll mb-2">
             <table className="site-job-workflow__paper-table site-job-workflow__dense-table site-job-workflow__stack-mobile">
               <thead>
@@ -2631,7 +4024,9 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                 </tr>
               </thead>
               <tbody>
-                {BEHAVIOUR_ISSUE_ROWS.map((issue, ri) => (
+                {behaviourIssueIdx.map((ri) => {
+                  const issue = BEHAVIOUR_ISSUE_ROWS[ri];
+                  return (
                   <tr key={`bi-${issue.slNo}`}>
                     <td className="small" data-label="Issue">
                       <strong>{String(issue.slNo).padStart(2, "0")}</strong> {issue.label}
@@ -2675,7 +4070,8 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                       );
                     })}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -2689,15 +4085,17 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
         </div>
       )}
 
-      {currentStepIndex === 7 && (
+      {currentStepIndex === 8 && (
         <div>
-          <h3 className="site-job-workflow__form-title">Site team attendance register</h3>
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Site team attendance register</div>
           <p className="site-job-workflow__muted small mb-2">
             Codes: <strong>P</strong> Present, <strong>A</strong> Absent, <strong>S</strong> Sick, <strong>HQ</strong> HQ duty, <strong>LS</strong> Leave/shift off, <strong>INJ</strong> Injury. Cell updates use{" "}
             <strong>PUT .../job-data/attendance-register-cells</strong> when you save this step.
           </p>
           <div className="site-job-workflow__att-submissions site-job-workflow__panel border rounded p-2 mb-3">
-            <h4 className="h6 fw-bold mb-2">Employee attendance (photo check-ins)</h4>
+            <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static site-job-workflow__section-bar--compact">
+              Employee attendance (photo check-ins)
+            </div>
             <p className="site-job-workflow__muted small mb-2">
               Same flow as the Attendance Portal: employees submit with <strong>photo + site + shift</strong>. Rows come from{" "}
               <strong>GET /api/admin/attendance</strong> for <strong>site id {siteId}</strong> only ({site.name ?? "this site"}). That is separate from the{" "}
@@ -2723,15 +4121,23 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                 Refresh
               </button>
             </div>
+            <WorkflowSearchFilterShell
+              drawerTitle="Photo check-ins"
+              search={wfSiteAttPortal.search}
+              onSearchChange={(v) => patchWfFilter("site_att_portal", { search: v })}
+              columnSpec={siteAttendancePortalColumnSpec}
+              cols={wfSiteAttPortal.cols || {}}
+              onApplyColumnFilters={(c) => patchWfFilter("site_att_portal", { cols: c, replaceCols: true })}
+            />
             {siteAttendanceError ? <div className="alert alert-danger py-2 small mb-2">{siteAttendanceError}</div> : null}
             {siteAttendanceLoading ? <p className="text-muted small mb-0">Loading attendance submissions…</p> : null}
-            {!siteAttendanceLoading && filteredSiteAttendance.length === 0 ? (
+            {!siteAttendanceLoading && siteAttendancePortalDisplay.length === 0 ? (
               <p className="text-muted small mb-0">
                 No portal check-ins for this site and filter. If you only filled the code grid, use{" "}
                 <strong>Add Record</strong> on the employee Attendance Portal (same site) to create rows here.
               </p>
             ) : null}
-            {!siteAttendanceLoading && filteredSiteAttendance.length > 0 ? (
+            {!siteAttendanceLoading && siteAttendancePortalDisplay.length > 0 ? (
               <div className="site-job-workflow__scroll">
                 <table className="site-job-workflow__paper-table site-job-workflow__dense-table site-job-workflow__stack-mobile mb-0">
                   <thead>
@@ -2746,7 +4152,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredSiteAttendance.map((req) => {
+                    {siteAttendancePortalDisplay.map((req) => {
                       const ymd = attendanceRowDateYmd(req);
                       const st = attendanceRowStatus(req);
                       const dateDisp = formatYmdLocalMedium(ymd);
@@ -2816,7 +4222,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               </div>
             ) : null}
           </div>
-          <h4 className="h6 fw-bold mb-2">Daily register (codes)</h4>
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Daily register (codes)</div>
           <table className="site-job-workflow__paper-table mb-3">
             <tbody>
               <tr>
@@ -2938,6 +4344,15 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
           {!attendanceRegister ? (
             <p className="text-muted">No register data returned for this site.</p>
           ) : (
+            <>
+              <WorkflowSearchFilterShell
+                drawerTitle="Daily register (codes)"
+                search={wfAttReg.search}
+                onSearchChange={(v) => patchWfFilter("attendance_register", { search: v })}
+                columnSpec={attRegColumnSpec}
+                cols={wfAttReg.cols || {}}
+                onApplyColumnFilters={(c) => patchWfFilter("attendance_register", { cols: c, replaceCols: true })}
+              />
             <div className="site-job-workflow__scroll">
               <table className="site-job-workflow__paper-table site-job-workflow__stack-mobile">
                 <thead>
@@ -2953,7 +4368,9 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {(attendanceRegister.rows || []).map((row, ri) => (
+                  {attRegIdx.map((ri) => {
+                    const row = attRegRows[ri];
+                    return (
                     <tr key={row.employeeId ?? ri}>
                       <td data-label="Sl.">{row.slNo ?? ri + 1}</td>
                       <td data-label="Name">{row.employeeName}</td>
@@ -3006,10 +4423,12 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
                         ) : null}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
+            </>
           )}
           {siteAttRejectId != null ? (
             <div className="admin-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="site-workflow-att-reject-title">
@@ -3056,9 +4475,9 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
         </div>
       )}
 
-      {currentStepIndex === 8 && (
+      {currentStepIndex === 9 && (
         <div>
-          <h3 className="site-job-workflow__form-title">Work completion &amp; customer feedback</h3>
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Work completion &amp; customer feedback</div>
           <table className="site-job-workflow__paper-table mb-3">
             <tbody>
               <tr>
@@ -3071,10 +4490,39 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
               </tr>
             </tbody>
           </table>
-          <h4 className="h6 mt-3">Customer feedback (read-only)</h4>
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Customer feedback (read-only)</div>
           <p className="site-job-workflow__muted small mb-2">
-            Loaded with <strong>GET /api/admin/sites/&#123;id&#125;/customer-feedback</strong>. Clients submit via the public feedback link; if you need admin edits, add a matching <strong>PUT</strong> on the backend and wire it here.
+            Admins load responses with <strong>GET /api/admin/sites/&#123;id&#125;/customer-feedback</strong> (JWT required). Customers use the public page below —{" "}
+            <strong>no login</strong> — which posts JSON to{" "}
+            <code className="small">{resolvePublicCustomerFeedbackPostUrl(site.id ?? site.siteId)}</code> (override path with{" "}
+            <code className="small">VITE_PUBLIC_CUSTOMER_FEEDBACK_POST_URL_TEMPLATE</code> in <code className="small">.env</code> if your API differs).
           </p>
+          <div className="d-flex flex-wrap gap-2 align-items-start mb-3">
+            <div className="flex-grow-1" style={{ minWidth: "12rem" }}>
+              <label className="form-label small text-muted mb-0">Public feedback page (share with client)</label>
+              <input
+                type="text"
+                className="form-control form-control-sm"
+                readOnly
+                value={buildCustomerFeedbackFrontDoorUrl(site.id ?? site.siteId)}
+              />
+            </div>
+            <div className="d-flex align-items-end">
+              <button
+                type="button"
+                className="btn btn-outline-secondary btn-sm"
+                onClick={() => {
+                  const url = buildCustomerFeedbackFrontDoorUrl(site.id ?? site.siteId);
+                  void navigator.clipboard.writeText(url).then(
+                    () => showSuccess?.("Public feedback link copied."),
+                    () => showSuccess?.("Copy this link manually: " + url),
+                  );
+                }}
+              >
+                Copy link
+              </button>
+            </div>
+          </div>
           {customerFeedbackParsed ? (
             <div className="row g-2 mb-3">
               <div className="col-md-6">
@@ -3147,7 +4595,7 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
           ) : (
             <p className="text-muted small mb-3">No customer feedback record yet for this site.</p>
           )}
-          <h4 className="h6">Certificate draft (saved in wizard)</h4>
+          <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Certificate draft (saved in wizard)</div>
           <div className="row g-2">
             <div className="col-md-6">
               <label className="form-label small">Recipient / contractor name</label>
@@ -3286,6 +4734,9 @@ export default function AdminSiteJobWorkflow({ siteId, showSuccess, onExit }) {
         </div>
       )}
 
+            </>
+          ) : null}
+        </div>
       </div>
 
       <div className="site-job-workflow__nav-footer">

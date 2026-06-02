@@ -410,6 +410,12 @@
   max-width: 100%;
 }
 
+.records-list-search {
+  min-width: 8rem;
+  max-width: 16rem;
+  flex: 1 1 8rem;
+}
+
 .records-scope-hint {
   margin-top: 0 !important;
   margin-bottom: 0.75rem !important;

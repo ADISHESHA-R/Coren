@@ -1,5 +1,6 @@
 import { Component, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { BrowserRouter } from 'react-router-dom'
 import { initTheme } from './utils/theme.js'
 import './index.css'
 import App from './App.jsx'
@@ -74,7 +75,9 @@ if (!rootEl) {
     createRoot(rootEl).render(
       <StrictMode>
         <RootErrorBoundary>
-          <App />
+          <BrowserRouter>
+            <App />
+          </BrowserRouter>
         </RootErrorBoundary>
       </StrictMode>,
     );

@@ -145,6 +145,8 @@ function Dashboard({ onLogout }) {
    * calendar_month uses currentMonth from the calendar navigator.
    */
   const [recordsPeriod, setRecordsPeriod] = useState("this_week");
+  /** Client-only: filter the visible records list (list view). */
+  const [recordsListSearch, setRecordsListSearch] = useState("");
 
   const isEmployee = role === "EMPLOYEE";
   const [todayAttendance, setTodayAttendance] = useState([]);
@@ -335,13 +337,21 @@ function Dashboard({ onLogout }) {
     }
     const startYmd = toLocalYMD(rangeStart);
     const endYmd = toLocalYMD(rangeEnd);
-    return records
+    const sorted = records
       .filter((r) => {
         const ds = recordDateString(r.date);
         return ds && ds >= startYmd && ds <= endYmd;
       })
       .sort((a, b) => recordDateString(b.date).localeCompare(recordDateString(a.date)));
-  }, [records, recordsPeriod, currentMonth, isEmployee, timeTick]);
+    const q = recordsListSearch.trim().toLowerCase();
+    if (!q) return sorted;
+    return sorted.filter((rec) => {
+      const site = String(rec.site?.name ?? rec.siteName ?? "").toLowerCase();
+      const st = (rec.status ?? rec.attendanceStatus ?? "PENDING").toString().trim().toLowerCase();
+      const ds = recordDateString(rec.date);
+      return site.includes(q) || st.includes(q) || ds.includes(q);
+    });
+  }, [records, recordsPeriod, currentMonth, isEmployee, timeTick, recordsListSearch]);
 
   const recordsByYmd = useMemo(() => {
     const map = new Map();
@@ -482,6 +492,18 @@ function Dashboard({ onLogout }) {
                     This week
                   </button>
                 ) : null}
+                <label htmlFor="records-list-search" className="visually-hidden">
+                  Filter records list
+                </label>
+                <input
+                  id="records-list-search"
+                  type="search"
+                  className="form-control form-control-sm records-list-search"
+                  placeholder="Search list…"
+                  value={recordsListSearch}
+                  onChange={(e) => setRecordsListSearch(e.target.value)}
+                  aria-label="Filter records by site, status, or date"
+                />
               </div>
             </div>
             <p className="section-hint records-scope-hint mb-2">
@@ -513,7 +535,11 @@ function Dashboard({ onLogout }) {
               <p className="text-danger small mb-0">{recordsError}</p>
             ) : displayedRecords.length === 0 ? (
               <p className="text-muted mb-0">
-                {records.length === 0 ? "No attendance records yet." : "No records in this period."}
+                {records.length === 0
+                  ? "No attendance records yet."
+                  : recordsListSearch.trim()
+                    ? "No records match your list search in this period."
+                    : "No records in this period."}
               </p>
             ) : (
               <ul className="records-list">

@@ -2,8 +2,14 @@
 
 ## API and CORS
 
-- **Local dev (`npm run dev`)** and **`npm run preview`**: keep `VITE_API_BASE_URL` unset. The app calls same-origin `/api/...`; Vite proxies those requests to the real backend (see `vite.config.js` and `VITE_API_PROXY_TARGET` in `.env.example`). That avoids browser CORS during development, including when you open the app via a LAN IP (e.g. from a phone).
+- **Local dev (`npm run dev`)** and **`npm run preview`**: keep `VITE_API_BASE_URL` unset. The app calls same-origin `/api/...`; Vite proxies those requests to your backend (default **`https://backendclientapi.onrender.com`** in `vite.config.js`, matching production). To hit a **local** API instead, set `VITE_API_PROXY_TARGET=http://127.0.0.1:8080` in `.env` / `.env.local` and restart Vite. That avoids browser CORS during development, including when you open the app via a LAN IP (e.g. from a phone).
+- **Admin URLs**: signed-in admins use **`/admin/...`** paths (e.g. `/admin/dashboard`, `/admin/sites`, `/admin/sites/bangalore-blr001/site-job-workflow?step=6`). The host is always your frontend origin (`localhost:5173` locally, your Render static site URL in production); only the path changes. Deployed static sites must keep the SPA fallback `/* → /index.html` **after** the `/api/*` rewrite (see root `render.yaml`).
+- **Public customer feedback**: **`/customer-feedback/{siteId}`** — anonymous form (no JWT). Configure the POST target with **`VITE_PUBLIC_CUSTOMER_FEEDBACK_POST_URL_TEMPLATE`** if it differs from the default (see `.env.example`).
 - **Production build** on a host different from the API: set `VITE_API_BASE_URL` at build time to your API origin. Your backend must return appropriate `Access-Control-Allow-*` headers for that frontend origin, **or** put both behind one reverse proxy so the browser sees a single origin.
+
+## Equipment portal (admin site job-data)
+
+Handoff for **GET/PUT** `/api/admin/sites/{siteId}/job-data/equipment-portal` and **PUT** `.../equipment-portal/layout` (JSON shapes, month checkbox rules, layout vs full save): [docs/EQUIPMENT_PORTAL_FE_HANDOFF.md](docs/EQUIPMENT_PORTAL_FE_HANDOFF.md).
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 

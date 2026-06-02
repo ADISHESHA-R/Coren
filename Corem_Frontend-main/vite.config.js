@@ -2,7 +2,11 @@ import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
-/** Backend origin for dev/preview proxy (browser calls same-origin `/api`, Vite forwards here — no CORS). */
+/**
+ * Backend origin for dev/preview proxy (browser calls same-origin `/api`, Vite forwards here — no CORS).
+ * Default matches the deployed API (`apiBaseUrl.js` PRODUCTION_DEFAULT). For a local backend, set
+ * `VITE_API_PROXY_TARGET=http://127.0.0.1:8080` in `.env` / `.env.local`, then restart Vite.
+ */
 const DEFAULT_API_PROXY_TARGET = 'https://backendclientapi.onrender.com'
 
 function resolveApiProxyTarget(env) {

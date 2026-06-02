@@ -48,7 +48,7 @@ async function loginByRole(endpoint, credentials) {
 
   const looksHtml = /^<!DOCTYPE/i.test(trimmed) || /^<html/i.test(trimmed);
   const bodyEmpty = !trimmed || contentLength === "0";
-  return { response, payload, bodyEmpty, looksHtml, contentLength };
+  return { response, payload, bodyEmpty, looksHtml, contentLength, bodyText: trimmed };
 }
 
 function LoginPage() {
@@ -150,13 +150,43 @@ function LoginPage() {
     try {
       const credentials = { email: email.trim(), password };
       let firstErrorMessage = "Login failed. Please check your credentials.";
+      /** When true, a prior attempt hit HTTP 5xx — do not replace with a generic 401 from the other role endpoint. */
+      let preferServerError = false;
 
       for (const attempt of LOGIN_ATTEMPTS) {
-        const { response, payload, bodyEmpty, looksHtml, contentLength } = await loginByRole(attempt.endpoint, credentials);
+        const { response, payload, bodyEmpty, looksHtml, contentLength, bodyText } = await loginByRole(
+          attempt.endpoint,
+          credentials,
+        );
 
         if (!response.ok) {
-          if (payload?.message && firstErrorMessage === "Login failed. Please check your credentials.") {
-            firstErrorMessage = payload.message;
+          const status = response.status;
+          const fromPayload = typeof payload?.message === "string" ? payload.message.trim() : "";
+
+          if (status >= 500) {
+            preferServerError = true;
+            firstErrorMessage =
+              fromPayload ||
+              `Server error (HTTP ${status}) while contacting ${attempt.endpoint}. The API failed on the server — check your backend logs. Wrong credentials usually return 401, not ${status}.`;
+            continue;
+          }
+
+          if (preferServerError) {
+            continue;
+          }
+
+          if (fromPayload) {
+            firstErrorMessage = fromPayload;
+          } else if (status === 401 || status === 403) {
+            firstErrorMessage = "Login failed. Please check your credentials.";
+          } else if (status === 404) {
+            firstErrorMessage = `Login endpoint not found (HTTP ${status}): ${attempt.endpoint}. Is the API running and mounted at /api?`;
+          } else {
+            const snippet = String(bodyText || "").trim().slice(0, 200);
+            firstErrorMessage =
+              snippet && !/^<!DOCTYPE/i.test(snippet) && !/^<html/i.test(snippet)
+                ? `Login failed (HTTP ${status}): ${snippet}`
+                : `Login failed (HTTP ${status}).`;
           }
           continue;
         }
@@ -213,7 +243,20 @@ function LoginPage() {
 
       throw new Error(firstErrorMessage);
     } catch (submitError) {
-      setError(submitError.message || "Unable to login right now.");
+      const raw = String(submitError?.message || "").trim();
+      const looksNetwork =
+        /failed to fetch|load failed|networkerror|fetch is not defined|network request failed|econnrefused|enotfound|aborted|timeout/i.test(
+          raw,
+        );
+      if (looksNetwork) {
+        setError(
+          "Cannot reach the API. With `npm run dev`, Vite proxies `/api` to the target in `vite.config.js` (override with VITE_API_PROXY_TARGET in `.env` / `.env.local`, then restart Vite). " +
+            "If you use a local backend, set VITE_API_PROXY_TARGET=http://127.0.0.1:8080. " +
+            (raw ? `(${raw})` : ""),
+        );
+      } else {
+        setError(raw || "Unable to login right now.");
+      }
     } finally {
       setLoading(false);
     }

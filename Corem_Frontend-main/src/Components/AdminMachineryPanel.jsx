@@ -117,11 +117,45 @@ export default function AdminMachineryPanel({ showSuccess, onCatalogChange }) {
   const [deleteTargetId, setDeleteTargetId] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
 
+  /** List view only — Daily machinery table */
+  const [dailyListSearch, setDailyListSearch] = useState("");
+  const [dailyChecklistFilter, setDailyChecklistFilter] = useState("");
+  /** List view only — Yearly summary table */
+  const [yearlyListSearch, setYearlyListSearch] = useState("");
+
   const selectedSiteLabel = useMemo(() => {
     const id = Number(siteId);
     const s = sites.find((x) => Number(x.id) === id);
     return s ? `${s.name ?? "Site"} (#${id})` : "";
   }, [sites, siteId]);
+
+  const filteredDailyLines = useMemo(() => {
+    let arr = lines;
+    const ck = (dailyChecklistFilter || "").trim().toUpperCase();
+    if (ck) {
+      arr = arr.filter((r) => String(r.checklistCategoryKey ?? "").toUpperCase() === ck);
+    }
+    const q = dailyListSearch.trim().toLowerCase();
+    if (q) {
+      arr = arr.filter((r) =>
+        [r.code, r.name, r.itemDescription, r.jobCode, r.notes, r.catalogStatus, r.uom].some((x) =>
+          String(x ?? "").toLowerCase().includes(q),
+        ),
+      );
+    }
+    return arr;
+  }, [lines, dailyListSearch, dailyChecklistFilter]);
+
+  const filteredYearlyMonths = useMemo(() => {
+    const months = yearlyData?.months ?? [];
+    const q = yearlyListSearch.trim().toLowerCase();
+    if (!q) return months;
+    return months.filter((m) => {
+      const name = String(m.monthName ?? `Month ${m.month}`).toLowerCase();
+      const tops = (m.topMachineCodes ?? []).join(" ").toLowerCase();
+      return name.includes(q) || tops.includes(q) || String(m.month ?? "").includes(q);
+    });
+  }, [yearlyData?.months, yearlyListSearch]);
 
   const fetchSites = useCallback(async () => {
     const auth = getAuthHeader();
@@ -415,7 +449,41 @@ export default function AdminMachineryPanel({ showSuccess, onCatalogChange }) {
           ) : dailyLoading ? (
             <p className="text-muted mb-0">Loading…</p>
           ) : (
-            <div className="table-responsive">
+            <>
+              <div className="row g-2 align-items-end mb-2">
+                <div className="col-12 col-md-5 col-lg-4">
+                  <label className="form-label small mb-0" htmlFor="machinery-daily-list-search">
+                    Search this list
+                  </label>
+                  <input
+                    id="machinery-daily-list-search"
+                    type="search"
+                    className="form-control form-control-sm"
+                    placeholder="Code, name, job code, notes…"
+                    value={dailyListSearch}
+                    onChange={(e) => setDailyListSearch(e.target.value)}
+                  />
+                </div>
+                <div className="col-6 col-md-3 col-lg-2">
+                  <label className="form-label small mb-0" htmlFor="machinery-daily-checklist-filter">
+                    Checklist
+                  </label>
+                  <select
+                    id="machinery-daily-checklist-filter"
+                    className="form-select form-select-sm"
+                    value={dailyChecklistFilter}
+                    onChange={(e) => setDailyChecklistFilter(e.target.value)}
+                  >
+                    <option value="">All</option>
+                    {CHECKLIST_CATEGORY_OPTIONS.filter((o) => o.key).map((o) => (
+                      <option key={o.key} value={o.key}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="table-responsive">
               <table className="table table-bordered table-sm table-hover align-middle machinery-table">
                 <thead>
                   <tr>
@@ -433,16 +501,25 @@ export default function AdminMachineryPanel({ showSuccess, onCatalogChange }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {lines.map((row, idx) => {
+                  {filteredDailyLines.length === 0 ? (
+                    <tr>
+                      <td colSpan={11} className="text-muted text-center small">
+                        No machines match this search/filter.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredDailyLines.map((row) => {
+                    const idx = lines.findIndex((l) => l.machineryId === row.machineryId);
+                    const safeIdx = idx >= 0 ? idx : 0;
                     const used = parseQty(row.qty) > 0;
                     return (
-                      <tr key={row.machineryId ?? idx}>
+                      <tr key={row.machineryId ?? safeIdx}>
                         <td>
                           <input
                             type="checkbox"
                             className="form-check-input m-0"
                             checked={used}
-                            onChange={(e) => toggleUsed(idx, e.target.checked)}
+                            onChange={(e) => toggleUsed(safeIdx, e.target.checked)}
                             aria-label={`Mark ${row.code} as used`}
                           />
                         </td>
@@ -462,7 +539,7 @@ export default function AdminMachineryPanel({ showSuccess, onCatalogChange }) {
                             step={0.1}
                             disabled={!used}
                             value={used ? row.qty : 0}
-                            onChange={(e) => setLineField(idx, "qty", parseQty(e.target.value))}
+                            onChange={(e) => setLineField(safeIdx, "qty", parseQty(e.target.value))}
                           />
                         </td>
                         <td style={{ maxWidth: "6rem" }}>
@@ -472,7 +549,7 @@ export default function AdminMachineryPanel({ showSuccess, onCatalogChange }) {
                             list={`uom-preset-${row.machineryId}`}
                             disabled={!used}
                             value={row.uom}
-                            onChange={(e) => setLineField(idx, "uom", e.target.value)}
+                            onChange={(e) => setLineField(safeIdx, "uom", e.target.value)}
                           />
                           <datalist id={`uom-preset-${row.machineryId}`}>
                             {UOM_PRESETS.map((u) => (
@@ -486,7 +563,7 @@ export default function AdminMachineryPanel({ showSuccess, onCatalogChange }) {
                             className="form-control form-control-sm"
                             disabled={!used}
                             value={row.jobCode}
-                            onChange={(e) => setLineField(idx, "jobCode", e.target.value)}
+                            onChange={(e) => setLineField(safeIdx, "jobCode", e.target.value)}
                             placeholder="—"
                           />
                         </td>
@@ -496,7 +573,7 @@ export default function AdminMachineryPanel({ showSuccess, onCatalogChange }) {
                             className="form-control form-control-sm"
                             disabled={!used}
                             value={row.notes}
-                            onChange={(e) => setLineField(idx, "notes", e.target.value)}
+                            onChange={(e) => setLineField(safeIdx, "notes", e.target.value)}
                             placeholder="—"
                           />
                         </td>
@@ -513,10 +590,12 @@ export default function AdminMachineryPanel({ showSuccess, onCatalogChange }) {
                         </td>
                       </tr>
                     );
-                  })}
+                  })
+                  )}
                 </tbody>
               </table>
             </div>
+            </>
           )}
           {lines.length > 0 ? (
             <div className="mt-2">
@@ -609,32 +688,64 @@ export default function AdminMachineryPanel({ showSuccess, onCatalogChange }) {
           {yearlyLoading && !yearlyData ? (
             <p className="text-muted mb-0">Loading…</p>
           ) : (
-            <div className="table-responsive">
-              <table className="table table-bordered table-sm">
-                <thead>
-                  <tr>
-                    <th>Month</th>
-                    <th>Days with usage</th>
-                    <th>Total machine-days</th>
-                    <th>Top machines</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(yearlyData?.months ?? []).map((m) => (
-                    <tr key={m.month}>
-                      <td>
-                        <button type="button" className="btn btn-link btn-sm p-0 text-start" onClick={() => { setSummaryMonth(m.month); setTab("monthly"); }}>
-                          {m.monthName ?? `Month ${m.month}`}
-                        </button>
-                      </td>
-                      <td>{m.daysWithUsage ?? 0}</td>
-                      <td>{m.totalMachineDays ?? 0}</td>
-                      <td className="small">{(m.topMachineCodes ?? []).join(", ") || "—"}</td>
+            <>
+              <div className="row g-2 align-items-end mb-2">
+                <div className="col-12 col-md-5 col-lg-4">
+                  <label className="form-label small mb-0" htmlFor="machinery-yearly-list-search">
+                    Search this list
+                  </label>
+                  <input
+                    id="machinery-yearly-list-search"
+                    type="search"
+                    className="form-control form-control-sm"
+                    placeholder="Month name, machine codes…"
+                    value={yearlyListSearch}
+                    onChange={(e) => setYearlyListSearch(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="table-responsive">
+                <table className="table table-bordered table-sm">
+                  <thead>
+                    <tr>
+                      <th>Month</th>
+                      <th>Days with usage</th>
+                      <th>Total machine-days</th>
+                      <th>Top machines</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {filteredYearlyMonths.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="text-muted text-center small">
+                          No rows match this search.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredYearlyMonths.map((m) => (
+                        <tr key={m.month}>
+                          <td>
+                            <button
+                              type="button"
+                              className="btn btn-link btn-sm p-0 text-start"
+                              onClick={() => {
+                                setSummaryMonth(m.month);
+                                setTab("monthly");
+                              }}
+                            >
+                              {m.monthName ?? `Month ${m.month}`}
+                            </button>
+                          </td>
+                          <td>{m.daysWithUsage ?? 0}</td>
+                          <td>{m.totalMachineDays ?? 0}</td>
+                          <td className="small">{(m.topMachineCodes ?? []).join(", ") || "—"}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </>
       )}

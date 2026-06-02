@@ -5,7 +5,7 @@
  *
  * **Avoid CORS during local dev / LAN testing**
  * - Use relative base `""` so requests go to `http(s)://<your-host>:port/api/...` (same origin as Vite).
- * - `vite.config.js` proxies `/api` → real backend (`VITE_API_PROXY_TARGET` or default).
+ * - `vite.config.js` proxies `/api` → real backend (`VITE_API_PROXY_TARGET` or same default origin as PRODUCTION_DEFAULT below).
  *
  * Override in `.env` / `.env.development` / `.env.production`:
  *   VITE_API_BASE_URL=https://your-api.example.com   (browser calls API directly; backend must send CORS headers)
