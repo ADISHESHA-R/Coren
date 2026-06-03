@@ -9,6 +9,88 @@ import { API_BASE_URL } from "./apiBaseUrl.js";
  */
 const DEFAULT_POST_TEMPLATE = "/api/public/sites/{siteId}/customer-feedback";
 
+/** Score fields stored inside `feedbackJson` on the server (see parseCustomerFeedbackRecord). */
+const CUSTOMER_FEEDBACK_RATING_KEYS = [
+  "productQuality",
+  "customerService",
+  "machiningQuality",
+  "pricing",
+  "shippingDelivery",
+  "likelihoodRecommend",
+];
+
+const CUSTOMER_FEEDBACK_TEXT_KEYS = [
+  "name",
+  "email",
+  "phone",
+  "companyName",
+  "otherCategoryNote",
+  "specificFeedback",
+  "suggestions",
+  "additionalComments",
+];
+
+/**
+ * Normalise form values for the API: trimmed strings; ratings as integers or null (never "").
+ * Empty rating → null so Jackson can bind to `Integer`, not empty string.
+ */
+export function sanitizeCustomerFeedbackFormFields(form) {
+  const f = form && typeof form === "object" ? form : {};
+  const out = {};
+  for (const k of CUSTOMER_FEEDBACK_TEXT_KEYS) {
+    out[k] = String(f[k] ?? "").trim();
+  }
+  for (const k of CUSTOMER_FEEDBACK_RATING_KEYS) {
+    const s = String(f[k] ?? "").trim();
+    if (s === "") out[k] = null;
+    else {
+      const n = Number.parseInt(s, 10);
+      out[k] = Number.isFinite(n) ? n : null;
+    }
+  }
+  return out;
+}
+
+/**
+ * POST body for anonymous customer feedback.
+ * - Default `feedback_json`: `{ feedbackJson: "<stringified inner>" }` — matches admin GET `data.feedbackJson`.
+ * - `flat`: send the inner object only (legacy / alternate backends). Set `VITE_PUBLIC_CUSTOMER_FEEDBACK_BODY_MODE=flat`.
+ */
+export function buildPublicCustomerFeedbackPostBody(form) {
+  const mode = String(import.meta.env.VITE_PUBLIC_CUSTOMER_FEEDBACK_BODY_MODE ?? "feedback_json")
+    .trim()
+    .toLowerCase();
+  const inner = sanitizeCustomerFeedbackFormFields(form);
+  if (mode === "flat") return inner;
+  return { feedbackJson: JSON.stringify(inner) };
+}
+
+/**
+ * Client-side checks before POST. Returns an error message or "" if OK.
+ * Keeps typical 0–10 score ranges aligned with the form labels / backend validation.
+ */
+export function validateCustomerFeedbackFormForSubmit(form) {
+  const inner = sanitizeCustomerFeedbackFormFields(form);
+  if (!inner.name?.trim()) return "Please enter your name.";
+  const scoreKeys = [
+    ["productQuality", "Product quality"],
+    ["customerService", "Customer service"],
+    ["machiningQuality", "Machining quality"],
+    ["pricing", "Pricing"],
+    ["shippingDelivery", "Shipping / delivery"],
+  ];
+  for (const [key, label] of scoreKeys) {
+    const v = inner[key];
+    if (v == null) continue;
+    if (v < 0 || v > 10) return `${label} must be between 0 and 10 (you entered ${v}).`;
+  }
+  const lr = inner.likelihoodRecommend;
+  if (lr != null && (lr < 0 || lr > 10)) {
+    return `Likelihood to recommend must be between 0 and 10 (you entered ${lr}).`;
+  }
+  return "";
+}
+
 /**
  * Full URL for POST (no Authorization header). Same-origin in dev when `API_BASE_URL` is "".
  */

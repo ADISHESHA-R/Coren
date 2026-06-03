@@ -86,7 +86,7 @@ function persistReadNoticeIdSet(set) {
 }
 
 function Header({ onLogout, sessionReady = true }) {
-  const showToast = useToast();
+  const { showToast } = useToast() ?? {};
   const [profileDialogOpen, setProfileDialogOpen] = useState(false);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
@@ -460,7 +460,7 @@ function Header({ onLogout, sessionReady = true }) {
       applyProfileToState(updatedProfile, { bumpAvatarVersion: kind === "photo" });
       const successMsg = kind === "photo" ? "Photo uploaded successfully." : "Signature uploaded successfully.";
       setUploadSuccess(successMsg);
-      if (showToast) showToast(successMsg);
+      showToast?.(successMsg);
       if (kind === "photo") {
         setPhotoFile(null);
       } else {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, Fragment, useId, useMemo, useRef, useState } from "react";
 import { refreshAccessToken } from "../utils/refreshAccessToken";
 import { API_BASE_URL as BASE_URL } from "../config/apiBaseUrl.js";
-import { buildCustomerFeedbackFrontDoorUrl, resolvePublicCustomerFeedbackPostUrl } from "../config/customerFeedbackPublic.js";
+import { buildCustomerFeedbackFrontDoorUrl } from "../config/customerFeedbackPublic.js";
 import {
   CHECKLIST_CATEGORY_OPTIONS,
   CHECKLIST_KEY_TO_LABEL,
@@ -30,6 +30,7 @@ import {
   emptyTechnicianPaymentRow,
   emptyToolIssueRow,
   emptyTeamMovementRow,
+  mergeTechnicianPaymentLinesByPerson,
   normalizeAdvanceLines,
   normalizeTechnicianPaymentLines,
   normalizeToolIssueLines,
@@ -40,6 +41,7 @@ import {
   resizeBehaviourMemberColumns,
   serializeBehaviourReport,
   stripChallengeLineForApi,
+  sumTechnicianPaymentAmounts,
 } from "../data/siteJobWorkflowForms.js";
 import UserDirectoryCombobox from "./UserDirectoryCombobox.jsx";
 import { directorySelectValue } from "../utils/userDirectoryDisplay.js";
@@ -861,6 +863,7 @@ function formatYmdLocalMedium(ymd) {
 export default function AdminSiteJobWorkflow({
   siteId,
   showSuccess,
+  showError,
   onExit,
   onNavigateSitesList,
   urlStep1Based = null,
@@ -869,6 +872,16 @@ export default function AdminSiteJobWorkflow({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const AUTOSAVE_LS_KEY = "corem.admin.siteJobWorkflow.autosave";
+  const [autosaveEnabled, setAutosaveEnabled] = useState(() => {
+    try {
+      return typeof localStorage !== "undefined" && localStorage.getItem(AUTOSAVE_LS_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  /** Short status for optional autosave (non-blocking). */
+  const [autosaveStatus, setAutosaveStatus] = useState("");
   const [site, setSite] = useState(null);
   const [wizardData, setWizardData] = useState({ version: WIZARD_VERSION });
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
@@ -912,6 +925,16 @@ export default function AdminSiteJobWorkflow({
   const primaryTabsRef = useRef(null);
   const urlStep1BasedRef = useRef(urlStep1Based);
   urlStep1BasedRef.current = urlStep1Based;
+  /** Server wizard `step` (1-based); autosave uses this so we do not regress progress when editing earlier steps. */
+  const wizardPersistedStep1Ref = useRef(1);
+  const saveCtxRef = useRef({});
+  const autosaveRunningRef = useRef(false);
+  const showSuccessRef = useRef(showSuccess);
+  showSuccessRef.current = showSuccess;
+  const showErrorRef = useRef(showError);
+  showErrorRef.current = showError;
+  const onStepIndexChangeRef = useRef(onStepIndexChange);
+  onStepIndexChangeRef.current = onStepIndexChange;
 
   const patchWfFilter = useCallback((tableKey, patch) => {
     setWorkflowTableFilters((prev) => {
@@ -979,6 +1002,22 @@ export default function AdminSiteJobWorkflow({
     ];
   }, [filteredSiteAttendance]);
 
+  const reportWorkflowFailure = useCallback(
+    (message, { redirect = true } = {}) => {
+      const m =
+        String(message || "").trim() ||
+        "Something went wrong. You will be returned to the admin dashboard.";
+      setError(m);
+      showError?.(m);
+      if (redirect) {
+        window.setTimeout(() => {
+          onExit?.();
+        }, 120);
+      }
+    },
+    [showError, onExit],
+  );
+
   const refreshSiteAttendanceList = useCallback(async () => {
     if (!siteId) return;
     setSiteAttendanceLoading(true);
@@ -1026,11 +1065,11 @@ export default function AdminSiteJobWorkflow({
         setSiteAttendanceError(lastHttpMessage);
       }
     } catch (e) {
-      setSiteAttendanceError(e?.message || "Failed to load attendance submissions for this site.");
       setSiteAttendanceRecords([]);
+      reportWorkflowFailure(e?.message || "Failed to load attendance submissions for this site.");
     }
     setSiteAttendanceLoading(false);
-  }, [siteId]);
+  }, [siteId, reportWorkflowFailure]);
 
   useEffect(() => {
     if (currentStepIndex !== 8 || !siteId) return undefined;
@@ -1044,14 +1083,14 @@ export default function AdminSiteJobWorkflow({
     setError("");
     const authHeader = getAuthHeader();
     if (!authHeader) {
-      setError("Not authenticated.");
+      reportWorkflowFailure("Not authenticated. Returning to dashboard.");
       setLoading(false);
       return;
     }
     try {
       const siteRes = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}`);
       if (!siteRes.res.ok || !siteRes.data?.success) {
-        setError(siteRes.data?.message || "Failed to load site.");
+        reportWorkflowFailure(siteRes.data?.message || "Failed to load site.");
         setLoading(false);
         return;
       }
@@ -1063,6 +1102,7 @@ export default function AdminSiteJobWorkflow({
       if (wizRes.res.ok && wizRes.data?.success && wizRes.data.data != null) {
         parsed = parseWizardPayload(wizRes.data.data);
       }
+      wizardPersistedStep1Ref.current = Math.min(Math.max(Number(parsed.step) || 1, 1), STEPS.length);
       const merged = { version: WIZARD_VERSION, ...parsed.data };
       if (!merged.projectIntroduction) merged.projectIntroduction = emptyIntroFromSite(sitePayload);
       else {
@@ -1122,7 +1162,9 @@ export default function AdminSiteJobWorkflow({
       const issArr = Array.isArray(issues.data?.data) ? issues.data.data : [];
       const chArr = Array.isArray(chall.data?.data) ? chall.data.data : [];
       setAdvanceLines(normalizeAdvanceLines(advArr));
-      setTechnicianPaymentLines(normalizeTechnicianPaymentLines(techArr));
+      setTechnicianPaymentLines(
+        normalizeTechnicianPaymentLines(mergeTechnicianPaymentLinesByPerson(techArr)),
+      );
       setToolIssueLines(normalizeToolIssueLines(issArr));
       setChallengeLineRows(buildChallengeLineWorkflowState(chArr, headsFromApi));
 
@@ -1181,10 +1223,32 @@ export default function AdminSiteJobWorkflow({
       setAttendanceBlock(0);
       setAttendanceDirtyCells(new Map());
     } catch (e) {
-      setError(e?.message || "Failed to load workflow.");
+      reportWorkflowFailure(e?.message || "Failed to load workflow.");
     }
     setLoading(false);
-  }, [siteId]);
+  }, [siteId, reportWorkflowFailure, onStepIndexChange]);
+
+  const refreshCustomerFeedback = useCallback(async () => {
+    if (!siteId) return;
+    if (!getAuthHeader()) return;
+    try {
+      const fb = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/customer-feedback`);
+      if (fb.res.ok && fb.data?.success) setCustomerFeedback(fb.data.data);
+      else setCustomerFeedback(null);
+      const siteRes = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}`);
+      if (siteRes.res.ok && siteRes.data?.success && siteRes.data.data) {
+        setSite((prev) => ({ ...(prev && typeof prev === "object" ? prev : {}), ...siteRes.data.data }));
+      }
+    } catch (e) {
+      showError?.(e?.message || "Could not refresh customer feedback.");
+    }
+  }, [siteId, showError]);
+
+  useEffect(() => {
+    if (currentStepIndex !== 9 || !siteId) return undefined;
+    void refreshCustomerFeedback();
+    return undefined;
+  }, [currentStepIndex, siteId, refreshCustomerFeedback]);
 
   const refetchEquipmentPortal = useCallback(async () => {
     if (!siteId) return;
@@ -1241,10 +1305,10 @@ export default function AdminSiteJobWorkflow({
           });
         }
       } catch (e) {
-        setToolChecklistActionMessage({ kind: "warning", text: e?.message || "Layout save failed." });
+        reportWorkflowFailure(e?.message || "Failed to save tool layout order.");
       }
     },
-    [siteId, showSuccess],
+    [siteId, showSuccess, reportWorkflowFailure],
   );
 
   useEffect(() => {
@@ -1312,7 +1376,8 @@ export default function AdminSiteJobWorkflow({
     }
   }, [currentStepIndex]);
 
-  const persistWizard = useCallback(async (nextStep1Based, dataSnapshot) => {
+  const persistWizard = useCallback(async (nextStep1Based, dataSnapshot, options = {}) => {
+    const { applyServerResponse = true } = options;
     const snapshot = dataSnapshot ?? wizardDataRef.current;
     const body = {
       step: nextStep1Based,
@@ -1324,14 +1389,144 @@ export default function AdminSiteJobWorkflow({
       body: JSON.stringify(body),
     });
     if (!res.ok || data?.success === false) throw new Error(data?.message || "Failed to save wizard.");
-    if (data?.data != null) {
-      const parsed = parseWizardPayload(data.data);
-      setWizardData((prev) => ({ ...prev, ...parsed.data }));
-    } else {
-      setWizardData(body.data);
+    if (applyServerResponse) {
+      if (data?.data != null) {
+        const parsed = parseWizardPayload(data.data);
+        setWizardData((prev) => ({ ...prev, ...parsed.data }));
+      } else {
+        setWizardData(body.data);
+      }
     }
     return true;
   }, [siteId]);
+
+  const executeStepSave = useCallback(
+    async ({ advance, silent }) => {
+      const s = saveCtxRef.current;
+      const ci = s.currentStepIndex ?? 0;
+      const nextIdx = advance ? Math.min(ci + 1, STEPS.length - 1) : ci;
+      const wizardStep1ForPut = advance ? nextIdx + 1 : wizardPersistedStep1Ref.current;
+
+      if (ci <= 1) {
+        await persistWizard(wizardStep1ForPut, wizardDataRef.current, { applyServerResponse: !silent });
+      } else if (ci === 2) {
+        const portal = s.equipmentPortal;
+        if (!portal) {
+          if (advance) throw new Error("Equipment checklist not loaded yet.");
+          return;
+        }
+        const putBody = buildEquipmentPortalPutBody(portal);
+        const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/equipment-portal`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(putBody),
+        });
+        if (!res.ok || data?.success === false) throw new Error(data?.message || "Failed to save equipment portal.");
+        if (data?.data != null && !silent) {
+          const next = normalizeEquipmentPortalPayload(data.data);
+          setEquipmentPortal(next);
+          if (next.year != null && next.month != null) {
+            lastEquipmentPortalFetchRef.current = { year: next.year, month: next.month };
+          }
+        }
+        await persistWizard(wizardStep1ForPut, wizardDataRef.current, { applyServerResponse: !silent });
+      } else if (ci === 3) {
+        const advPayload = s.advanceLines;
+        if (!Array.isArray(advPayload)) throw new Error("Advance lines invalid.");
+        if (!Array.isArray(s.technicianPaymentLines)) throw new Error("Technician payments invalid.");
+        const techPayload = normalizeTechnicianPaymentLines(mergeTechnicianPaymentLinesByPerson(s.technicianPaymentLines));
+        const { res: r1, data: d1 } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/advance-expense-lines`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(advPayload),
+        });
+        if (!r1.ok || d1?.success === false) throw new Error(d1?.message || "Failed to save advance lines.");
+        const { res: r2, data: d2 } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/technician-payments`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(techPayload),
+        });
+        if (!r2.ok || d2?.success === false) throw new Error(d2?.message || "Failed to save technician payments.");
+        setTechnicianPaymentLines(techPayload);
+        await persistWizard(wizardStep1ForPut, wizardDataRef.current, { applyServerResponse: !silent });
+      } else if (ci === 4) {
+        const snapshot = {
+          ...wizardDataRef.current,
+          teamMovementRegister: normalizeTeamMovementRegister(wizardDataRef.current.teamMovementRegister, s.site),
+        };
+        await persistWizard(wizardStep1ForPut, snapshot, { applyServerResponse: !silent });
+        setWizardData(snapshot);
+      } else if (ci === 5) {
+        const issuesPayload = s.toolIssueLines;
+        if (!Array.isArray(issuesPayload)) throw new Error("Tool issues invalid.");
+        const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/tool-issues`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(issuesPayload),
+        });
+        if (!res.ok || data?.success === false) throw new Error(data?.message || "Failed to save tool issues.");
+        await persistWizard(wizardStep1ForPut, wizardDataRef.current, { applyServerResponse: !silent });
+      } else if (ci === 6) {
+        const challPayload = s.challengeLineRows.map(stripChallengeLineForApi);
+        if (!Array.isArray(challPayload)) throw new Error("Challenge lines invalid.");
+        const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/challenge-lines`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(challPayload),
+        });
+        if (!res.ok || data?.success === false) throw new Error(data?.message || "Failed to save challenges.");
+        await persistWizard(wizardStep1ForPut, wizardDataRef.current, { applyServerResponse: !silent });
+      } else if (ci === 7) {
+        const parsedBr = serializeBehaviourReport(s.behaviourState);
+        const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/behaviour-report`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(parsedBr),
+        });
+        if (!res.ok || data?.success === false) throw new Error(data?.message || "Failed to save behaviour report.");
+        await persistWizard(wizardStep1ForPut, wizardDataRef.current, { applyServerResponse: !silent });
+      } else if (ci === 8) {
+        const cells = [];
+        const dirty = s.attendanceDirtyCells;
+        if (dirty && typeof dirty.forEach === "function") {
+          dirty.forEach((code, key) => {
+            const [employeeUserId, date] = String(key).split("|");
+            if (!employeeUserId || !date || !code) return;
+            cells.push({ employeeUserId: Number(employeeUserId), date, code });
+          });
+        }
+        if (cells.length > 0) {
+          const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/attendance-register-cells`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cells }),
+          });
+          if (!res.ok || data?.success === false) throw new Error(data?.message || "Failed to save attendance cells.");
+        }
+        setAttendanceDirtyCells(new Map());
+        await persistWizard(wizardStep1ForPut, wizardDataRef.current, { applyServerResponse: !silent });
+        if (advance || cells.length > 0) {
+          const regRes = await adminFetchJson(
+            `${BASE_URL}/api/admin/sites/${siteId}/attendance-register?blockIndex=${s.attendanceBlock}&daysPerBlock=${DAYS_CHECKLIST}`,
+          );
+          if (!regRes.res.ok || !regRes.data?.success) {
+            throw new Error(regRes.data?.message || "Could not reload attendance register after save.");
+          }
+          setAttendanceRegister(regRes.data.data);
+        }
+      } else {
+        await persistWizard(wizardStep1ForPut, wizardDataRef.current, { applyServerResponse: !silent });
+      }
+
+      if (advance) {
+        wizardPersistedStep1Ref.current = wizardStep1ForPut;
+        setCurrentStepIndex(nextIdx);
+        onStepIndexChangeRef.current?.(nextIdx);
+        if (!silent) showSuccessRef.current?.("Saved.");
+      }
+    },
+    [siteId, persistWizard],
+  );
 
   const handleSiteAttendanceApprove = useCallback(
     async (attendanceId) => {
@@ -1348,11 +1543,11 @@ export default function AdminSiteJobWorkflow({
         showSuccess?.("Attendance approved.");
         await refreshSiteAttendanceList();
       } catch (e) {
-        setSiteAttendanceError(e?.message || "Failed to approve.");
+        reportWorkflowFailure(e?.message || "Failed to approve attendance.");
       }
       setSiteAttActionId(null);
     },
-    [refreshSiteAttendanceList, showSuccess],
+    [refreshSiteAttendanceList, showSuccess, reportWorkflowFailure],
   );
 
   const handleSiteAttendanceRejectSubmit = useCallback(async () => {
@@ -1376,127 +1571,63 @@ export default function AdminSiteJobWorkflow({
       setSiteAttRejectReason("");
       await refreshSiteAttendanceList();
     } catch (e) {
-      setSiteAttendanceError(e?.message || "Failed to reject.");
+      reportWorkflowFailure(e?.message || "Failed to reject attendance.");
     }
     setSiteAttActionId(null);
-  }, [siteAttRejectId, siteAttRejectReason, refreshSiteAttendanceList, showSuccess]);
+  }, [siteAttRejectId, siteAttRejectReason, refreshSiteAttendanceList, showSuccess, reportWorkflowFailure]);
 
   const handleNext = async () => {
     setSaving(true);
     setError("");
     try {
-      const nextIdx = Math.min(currentStepIndex + 1, STEPS.length - 1);
-      const nextStep1Based = nextIdx + 1;
-
-      if (currentStepIndex <= 1) {
-        await persistWizard(nextStep1Based, wizardDataRef.current);
-      } else if (currentStepIndex === 2) {
-        const portal = equipmentPortal;
-        if (!portal) throw new Error("Equipment checklist not loaded yet.");
-        const putBody = buildEquipmentPortalPutBody(portal);
-        const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/equipment-portal`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(putBody),
-        });
-        if (!res.ok || data?.success === false) throw new Error(data?.message || "Failed to save equipment portal.");
-        if (data?.data != null) {
-          const next = normalizeEquipmentPortalPayload(data.data);
-          setEquipmentPortal(next);
-          if (next.year != null && next.month != null) {
-            lastEquipmentPortalFetchRef.current = { year: next.year, month: next.month };
-          }
-        }
-        await persistWizard(nextStep1Based, wizardDataRef.current);
-      } else if (currentStepIndex === 3) {
-        const advPayload = advanceLines;
-        const techPayload = technicianPaymentLines;
-        if (!Array.isArray(advPayload)) throw new Error("Advance lines invalid.");
-        if (!Array.isArray(techPayload)) throw new Error("Technician payments invalid.");
-        const { res: r1, data: d1 } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/advance-expense-lines`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(advPayload),
-        });
-        if (!r1.ok || d1?.success === false) throw new Error(d1?.message || "Failed to save advance lines.");
-        const { res: r2, data: d2 } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/technician-payments`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(techPayload),
-        });
-        if (!r2.ok || d2?.success === false) throw new Error(d2?.message || "Failed to save technician payments.");
-        await persistWizard(nextStep1Based, wizardDataRef.current);
-      } else if (currentStepIndex === 4) {
-        const snapshot = {
-          ...wizardDataRef.current,
-          teamMovementRegister: normalizeTeamMovementRegister(wizardDataRef.current.teamMovementRegister, site),
-        };
-        await persistWizard(nextStep1Based, snapshot);
-        setWizardData(snapshot);
-      } else if (currentStepIndex === 5) {
-        const issuesPayload = toolIssueLines;
-        if (!Array.isArray(issuesPayload)) throw new Error("Tool issues invalid.");
-        const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/tool-issues`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(issuesPayload),
-        });
-        if (!res.ok || data?.success === false) throw new Error(data?.message || "Failed to save tool issues.");
-        await persistWizard(nextStep1Based, wizardDataRef.current);
-      } else if (currentStepIndex === 6) {
-        const challPayload = challengeLineRows.map(stripChallengeLineForApi);
-        if (!Array.isArray(challPayload)) throw new Error("Challenge lines invalid.");
-        const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/challenge-lines`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(challPayload),
-        });
-        if (!res.ok || data?.success === false) throw new Error(data?.message || "Failed to save challenges.");
-        await persistWizard(nextStep1Based, wizardDataRef.current);
-      } else if (currentStepIndex === 7) {
-        const parsed = serializeBehaviourReport(behaviourState);
-        const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/behaviour-report`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(parsed),
-        });
-        if (!res.ok || data?.success === false) throw new Error(data?.message || "Failed to save behaviour report.");
-        await persistWizard(nextStep1Based, wizardDataRef.current);
-      } else if (currentStepIndex === 8) {
-        const cells = [];
-        attendanceDirtyCells.forEach((code, key) => {
-          const [employeeUserId, date] = key.split("|");
-          if (!employeeUserId || !date || !code) return;
-          cells.push({ employeeUserId: Number(employeeUserId), date, code });
-        });
-        if (cells.length > 0) {
-          const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/attendance-register-cells`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ cells }),
-          });
-          if (!res.ok || data?.success === false) throw new Error(data?.message || "Failed to save attendance cells.");
-        }
-        setAttendanceDirtyCells(new Map());
-        await persistWizard(nextStep1Based, wizardDataRef.current);
-      } else {
-        await persistWizard(nextStep1Based, wizardDataRef.current);
-      }
-
-      setCurrentStepIndex(nextIdx);
-      onStepIndexChange?.(nextIdx);
-      showSuccess?.("Saved.");
-      if (currentStepIndex === 8) {
-        const regRes = await adminFetchJson(
-          `${BASE_URL}/api/admin/sites/${siteId}/attendance-register?blockIndex=${attendanceBlock}&daysPerBlock=${DAYS_CHECKLIST}`,
-        );
-        if (regRes.res.ok && regRes.data?.success) setAttendanceRegister(regRes.data.data);
-      }
+      await executeStepSave({ advance: true, silent: false });
     } catch (e) {
-      setError(e?.message || "Save failed.");
+      reportWorkflowFailure(e?.message || "Save failed. Nothing was saved for this step.");
     }
     setSaving(false);
   };
+
+  useEffect(() => {
+    if (!autosaveEnabled || loading || saving || !siteId || !getAuthHeader()) {
+      return undefined;
+    }
+    const id = window.setTimeout(() => {
+      if (autosaveRunningRef.current) return;
+      autosaveRunningRef.current = true;
+      setAutosaveStatus("Saving…");
+      void (async () => {
+        try {
+          await executeStepSave({ advance: false, silent: true });
+          const t = new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+          setAutosaveStatus(`Autosaved at ${t}`);
+        } catch (e) {
+          const msg = e?.message || "Autosave failed";
+          setAutosaveStatus(msg);
+          showErrorRef.current?.(msg);
+        } finally {
+          autosaveRunningRef.current = false;
+        }
+      })();
+    }, 4000);
+    return () => window.clearTimeout(id);
+  }, [
+    autosaveEnabled,
+    loading,
+    saving,
+    siteId,
+    currentStepIndex,
+    wizardData,
+    equipmentPortal,
+    advanceLines,
+    technicianPaymentLines,
+    toolIssueLines,
+    challengeLineRows,
+    behaviourState,
+    attendanceDirtyCells,
+    attendanceBlock,
+    site,
+    executeStepSave,
+  ]);
 
   const handleBack = () => {
     const n = Math.max(0, currentStepIndex - 1);
@@ -1505,13 +1636,19 @@ export default function AdminSiteJobWorkflow({
   };
 
   const reloadAttendanceBlock = async (block) => {
-    const { res, data } = await adminFetchJson(
-      `${BASE_URL}/api/admin/sites/${siteId}/attendance-register?blockIndex=${block}&daysPerBlock=${DAYS_CHECKLIST}`,
-    );
-    if (res.ok && data?.success) {
-      setAttendanceRegister(data.data);
-      setAttendanceBlock(block);
-      setAttendanceDirtyCells(new Map());
+    try {
+      const { res, data } = await adminFetchJson(
+        `${BASE_URL}/api/admin/sites/${siteId}/attendance-register?blockIndex=${block}&daysPerBlock=${DAYS_CHECKLIST}`,
+      );
+      if (res.ok && data?.success) {
+        setAttendanceRegister(data.data);
+        setAttendanceBlock(block);
+        setAttendanceDirtyCells(new Map());
+      } else {
+        showError?.(data?.message || "Could not load this attendance block.");
+      }
+    } catch (e) {
+      showError?.(e?.message || "Could not load this attendance block.");
     }
   };
 
@@ -1637,11 +1774,11 @@ export default function AdminSiteJobWorkflow({
   const wfTech = workflowTableFilters.expense_technician || { search: "", cols: {} };
   const techColMatchers = {
     technicianName: (r) => String(r.technicianName ?? "").trim(),
-    totalPayment: (r) => String(r.totalPayment ?? "").trim(),
+    totalPayment: (r) => String(sumTechnicianPaymentAmounts(r.payments) ?? "").trim(),
   };
   const techSearchFns = [
     (r) => r.technicianName,
-    (r) => r.totalPayment,
+    (r) => sumTechnicianPaymentAmounts(r.payments),
     ...Array.from({ length: TECHNICIAN_PAYMENT_SLOTS }, (_, pi) => [(r) => r.payments?.[pi]?.date, (r) => r.payments?.[pi]?.amount]).flat(2),
   ];
   for (let pi = 0; pi < TECHNICIAN_PAYMENT_SLOTS; pi += 1) {
@@ -1670,7 +1807,7 @@ export default function AdminSiteJobWorkflow({
   }));
   const techColumnSpec = [
     { key: "technicianName", label: "Technician", options: wfDistinctValues(technicianPaymentLines, (r) => r.technicianName) },
-    { key: "totalPayment", label: "Total", options: wfDistinctValues(technicianPaymentLines, (r) => r.totalPayment) },
+    { key: "totalPayment", label: "Total", options: wfDistinctValues(technicianPaymentLines, (r) => sumTechnicianPaymentAmounts(r.payments)) },
     ...Array.from({ length: TECHNICIAN_PAYMENT_SLOTS }, (_, pi) => [
       {
         key: `pay${pi}_date`,
@@ -1750,6 +1887,19 @@ export default function AdminSiteJobWorkflow({
 
   const wfSiteAttPortal = workflowTableFilters.site_att_portal || { search: "", cols: {} };
 
+  saveCtxRef.current = {
+    currentStepIndex,
+    equipmentPortal,
+    advanceLines,
+    technicianPaymentLines,
+    toolIssueLines,
+    challengeLineRows,
+    behaviourState,
+    attendanceDirtyCells,
+    attendanceBlock,
+    site,
+  };
+
   return (
     <section className="dashboard-section site-job-workflow">
       <nav className="site-job-workflow__breadcrumb" aria-label="Breadcrumb">
@@ -1785,9 +1935,36 @@ export default function AdminSiteJobWorkflow({
               {site.jobCode ? ` · ${site.jobCode}` : ""} · Step {currentStepIndex + 1} of {STEPS.length}
             </p>
           </div>
-          <div className="site-job-workflow__job-box site-job-workflow__job-box--shell flex-shrink-0" title="Job code">
-            <div className="small text-muted">JOB CODE</div>
-            <div>{site.jobCode ?? "—"}</div>
+          <div className="d-flex flex-wrap align-items-start gap-3 flex-shrink-0 ms-auto">
+            <div className="d-flex flex-column align-items-end gap-1">
+              <label className="d-flex align-items-center gap-2 small text-nowrap mb-0 user-select-none">
+                <input
+                  type="checkbox"
+                  className="form-check-input mt-0"
+                  checked={autosaveEnabled}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setAutosaveEnabled(on);
+                    try {
+                      localStorage.setItem(AUTOSAVE_LS_KEY, on ? "1" : "0");
+                    } catch {
+                      /* ignore */
+                    }
+                    if (!on) setAutosaveStatus("");
+                  }}
+                />
+                Autosave draft (~4s)
+              </label>
+              {autosaveEnabled && autosaveStatus ? (
+                <span className="small text-muted text-end" style={{ maxWidth: 240 }} title={autosaveStatus}>
+                  {autosaveStatus}
+                </span>
+              ) : null}
+            </div>
+            <div className="site-job-workflow__job-box site-job-workflow__job-box--shell flex-shrink-0" title="Job code">
+              <div className="small text-muted">JOB CODE</div>
+              <div>{site.jobCode ?? "—"}</div>
+            </div>
           </div>
         </div>
 
@@ -2215,7 +2392,8 @@ export default function AdminSiteJobWorkflow({
             <div className="col-md-6">
               <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Site team members</div>
               <p className="site-job-workflow__muted small mb-1">
-                Pick a user from the directory (same users as User Management, up to {USER_DIRECTORY_PAGE_SIZE} loaded), or choose Unlink to type a custom name.
+                Pick a user from the directory (same users as User Management, up to {USER_DIRECTORY_PAGE_SIZE} loaded). Open the
+                list and use <strong>Clear selection</strong> if you need a custom name typed below.
               </p>
               <WorkflowSearchFilterShell
                 drawerTitle="Site team members"
@@ -2269,7 +2447,7 @@ export default function AdminSiteJobWorkflow({
                             className="form-control form-control-sm"
                             placeholder={
                               row.employeeUserId != null
-                                ? "Linked name — click Unlink to type a custom name"
+                                ? "Linked name — clear user above to edit"
                                 : "Type member name if not in list above"
                             }
                             readOnly={row.employeeUserId != null}
@@ -2284,19 +2462,6 @@ export default function AdminSiteJobWorkflow({
                               updateWizard({ projectIntroduction: { ...intro, teamMembers: next } });
                             }}
                           />
-                          {row.employeeUserId != null ? (
-                            <button
-                              type="button"
-                              className="btn btn-link btn-sm p-0 mt-1"
-                              onClick={() => {
-                                const next = [...(intro.teamMembers || [])];
-                                next[idx] = { ...row, employeeUserId: null };
-                                updateWizard({ projectIntroduction: { ...intro, teamMembers: next } });
-                              }}
-                            >
-                              Unlink user (edit name manually)
-                            </button>
-                          ) : null}
                         </td>
                         <td data-label="" className="text-center">
                           <button
@@ -3170,7 +3335,8 @@ export default function AdminSiteJobWorkflow({
           </div>
           <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Technician-wise dispersion of funds</div>
           <p className="site-job-workflow__muted small mb-1">
-            Up to {TECHNICIAN_PAYMENT_SLOTS} payment dates per technician; totals are stored as entered.
+            Up to {TECHNICIAN_PAYMENT_SLOTS} payment slots per row; duplicate technicians are merged into one row when you load or
+            save (extra payments spill to the next row for the same person). <strong>Total</strong> is the sum of Pay 1–Pay 6 amounts.
           </p>
           <div className="d-flex gap-2 mb-2 align-items-center flex-wrap">
             <button
@@ -3243,14 +3409,20 @@ export default function AdminSiteJobWorkflow({
                           setTechnicianPaymentLines((prev) => {
                             const next = [...prev];
                             if (!v) {
-                              next[ri] = { ...next[ri], technicianUserId: null };
+                              next[ri] = {
+                                ...next[ri],
+                                technicianUserId: null,
+                                totalPayment: sumTechnicianPaymentAmounts(next[ri].payments),
+                              };
                             } else {
                               const id = Number(v);
                               const u = employeeOptions.find((x) => x.id === id);
+                              const pay = next[ri].payments;
                               next[ri] = {
                                 ...next[ri],
                                 technicianUserId: id,
                                 technicianName: u?.name ?? u?.email ?? "",
+                                totalPayment: sumTechnicianPaymentAmounts(pay),
                               };
                             }
                             return next;
@@ -3261,7 +3433,7 @@ export default function AdminSiteJobWorkflow({
                         className="form-control form-control-sm border-0 rounded-0 px-1"
                         placeholder={
                           row.technicianUserId != null
-                            ? "Linked — Unlink to type a custom name"
+                            ? "Linked — clear user above to type a custom name"
                             : "Technician name (custom if not in list)"
                         }
                         readOnly={row.technicianUserId != null}
@@ -3270,26 +3442,17 @@ export default function AdminSiteJobWorkflow({
                           const val = e.target.value;
                           setTechnicianPaymentLines((prev) => {
                             const n = [...prev];
-                            n[ri] = { ...n[ri], technicianName: val, technicianUserId: null };
+                            const pay = n[ri].payments;
+                            n[ri] = {
+                              ...n[ri],
+                              technicianName: val,
+                              technicianUserId: null,
+                              totalPayment: sumTechnicianPaymentAmounts(pay),
+                            };
                             return n;
                           });
                         }}
                       />
-                      {row.technicianUserId != null ? (
-                        <button
-                          type="button"
-                          className="btn btn-link btn-sm p-0 mt-1"
-                          onClick={() =>
-                            setTechnicianPaymentLines((prev) => {
-                              const n = [...prev];
-                              n[ri] = { ...n[ri], technicianUserId: null };
-                              return n;
-                            })
-                          }
-                        >
-                          Unlink user
-                        </button>
-                      ) : null}
                     </td>
                     {row.payments.map((p, pi) => (
                       <Fragment key={`p-${ri}-${pi}`}>
@@ -3304,7 +3467,11 @@ export default function AdminSiteJobWorkflow({
                                 const next = [...prev];
                                 const pay = [...next[ri].payments];
                                 pay[pi] = { ...pay[pi], date: v };
-                                next[ri] = { ...next[ri], payments: pay };
+                                next[ri] = {
+                                  ...next[ri],
+                                  payments: pay,
+                                  totalPayment: sumTechnicianPaymentAmounts(pay),
+                                };
                                 return next;
                               });
                             }}
@@ -3320,7 +3487,11 @@ export default function AdminSiteJobWorkflow({
                                 const next = [...prev];
                                 const pay = [...next[ri].payments];
                                 pay[pi] = { ...pay[pi], amount: v };
-                                next[ri] = { ...next[ri], payments: pay };
+                                next[ri] = {
+                                  ...next[ri],
+                                  payments: pay,
+                                  totalPayment: sumTechnicianPaymentAmounts(pay),
+                                };
                                 return next;
                               });
                             }}
@@ -3328,19 +3499,8 @@ export default function AdminSiteJobWorkflow({
                         </td>
                       </Fragment>
                     ))}
-                    <td data-label="Total">
-                      <input
-                        className="form-control form-control-sm border-0 rounded-0 px-1"
-                        value={row.totalPayment ?? ""}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          setTechnicianPaymentLines((prev) => {
-                            const next = [...prev];
-                            next[ri] = { ...next[ri], totalPayment: v };
-                            return next;
-                          });
-                        }}
-                      />
+                    <td data-label="Total" className="text-end align-middle pe-2 site-job-workflow__muted">
+                      {sumTechnicianPaymentAmounts(row.payments) || "—"}
                     </td>
                   </tr>
                   );
@@ -3640,7 +3800,7 @@ export default function AdminSiteJobWorkflow({
                         className="form-control form-control-sm border-0 rounded-0 px-1"
                         placeholder={
                           row.handledByEmployeeUserId != null
-                            ? "Linked — Unlink to type equipment / other"
+                            ? "Linked — clear user above to type a note"
                             : "Handled by (person or note)"
                         }
                         readOnly={row.handledByEmployeeUserId != null}
@@ -3654,21 +3814,6 @@ export default function AdminSiteJobWorkflow({
                           });
                         }}
                       />
-                      {row.handledByEmployeeUserId != null ? (
-                        <button
-                          type="button"
-                          className="btn btn-link btn-sm p-0 mt-1"
-                          onClick={() =>
-                            setToolIssueLines((prev) => {
-                              const n = [...prev];
-                              n[ri] = { ...n[ri], handledByEmployeeUserId: null };
-                              return n;
-                            })
-                          }
-                        >
-                          Unlink user
-                        </button>
-                      ) : null}
                     </td>
                     <td data-label="Issue description">
                       <input
@@ -3823,7 +3968,7 @@ export default function AdminSiteJobWorkflow({
                         className="form-control form-control-sm border-0 rounded-0 px-1"
                         placeholder={
                           row.involvedEmployeeUserId != null
-                            ? "Linked — Unlink for equipment / other text"
+                            ? "Linked — clear user above for equipment / other text"
                             : "Involved (person / equipment)"
                         }
                         readOnly={row.involvedEmployeeUserId != null}
@@ -3837,21 +3982,6 @@ export default function AdminSiteJobWorkflow({
                           });
                         }}
                       />
-                      {row.involvedEmployeeUserId != null ? (
-                        <button
-                          type="button"
-                          className="btn btn-link btn-sm p-0 mt-1"
-                          onClick={() =>
-                            setChallengeLineRows((prev) => {
-                              const n = [...prev];
-                              n[ri] = { ...n[ri], involvedEmployeeUserId: null };
-                              return n;
-                            })
-                          }
-                        >
-                          Unlink user
-                        </button>
-                      ) : null}
                     </td>
                     {[
                       ["challengesFaced", "text", "Challenges faced"],
@@ -3977,7 +4107,7 @@ export default function AdminSiteJobWorkflow({
                           <input
                             className="form-control form-control-sm border-0 rounded-0 text-center"
                             placeholder={
-                              linkedId != null ? "Linked name — Unlink to edit" : "Member name (custom)"
+                              linkedId != null ? "Linked name — clear user above to edit" : "Member name (custom)"
                             }
                             readOnly={linkedId != null}
                             value={behaviourState.members[mi]}
@@ -3993,22 +4123,6 @@ export default function AdminSiteJobWorkflow({
                               });
                             }}
                           />
-                          {linkedId != null ? (
-                            <button
-                              type="button"
-                              className="btn btn-link btn-sm p-0 mt-1 d-block mx-auto"
-                              onClick={() =>
-                                setBehaviourState((prev) => {
-                                  const memberEmployeeUserIds = [...(prev.memberEmployeeUserIds || [])];
-                                  while (memberEmployeeUserIds.length < prev.members.length) memberEmployeeUserIds.push(null);
-                                  memberEmployeeUserIds[mi] = null;
-                                  return { ...prev, memberEmployeeUserIds };
-                                })
-                              }
-                            >
-                              Unlink user
-                            </button>
-                          ) : null}
                         </th>
                       </Fragment>
                     );
@@ -4492,10 +4606,8 @@ export default function AdminSiteJobWorkflow({
           </table>
           <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Customer feedback (read-only)</div>
           <p className="site-job-workflow__muted small mb-2">
-            Admins load responses with <strong>GET /api/admin/sites/&#123;id&#125;/customer-feedback</strong> (JWT required). Customers use the public page below —{" "}
-            <strong>no login</strong> — which posts JSON to{" "}
-            <code className="small">{resolvePublicCustomerFeedbackPostUrl(site.id ?? site.siteId)}</code> (override path with{" "}
-            <code className="small">VITE_PUBLIC_CUSTOMER_FEEDBACK_POST_URL_TEMPLATE</code> in <code className="small">.env</code> if your API differs).
+            Share the link below with your customer. Submissions do not require a login. After they submit, use{" "}
+            <strong>Refresh feedback</strong> (or leave and re-open this step) to load the latest record from the API.
           </p>
           <div className="d-flex flex-wrap gap-2 align-items-start mb-3">
             <div className="flex-grow-1" style={{ minWidth: "12rem" }}>
@@ -4507,7 +4619,7 @@ export default function AdminSiteJobWorkflow({
                 value={buildCustomerFeedbackFrontDoorUrl(site.id ?? site.siteId)}
               />
             </div>
-            <div className="d-flex align-items-end">
+            <div className="d-flex align-items-end gap-2 flex-wrap">
               <button
                 type="button"
                 className="btn btn-outline-secondary btn-sm"
@@ -4520,6 +4632,15 @@ export default function AdminSiteJobWorkflow({
                 }}
               >
                 Copy link
+              </button>
+              <button
+                type="button"
+                className="btn btn-outline-primary btn-sm"
+                onClick={() => {
+                  void refreshCustomerFeedback().then(() => showSuccess?.("Customer feedback refreshed."));
+                }}
+              >
+                Refresh feedback
               </button>
             </div>
           </div>
@@ -4593,7 +4714,11 @@ export default function AdminSiteJobWorkflow({
               </div>
             </div>
           ) : (
-            <p className="text-muted small mb-3">No customer feedback record yet for this site.</p>
+            <p className="text-muted small mb-3">
+              No customer feedback record yet for this site. If the client already submitted, press <strong>Refresh feedback</strong>{" "}
+              above, or confirm the public form is not using the dev stub (see <code className="small">VITE_DEV_STUB_PUBLIC_CUSTOMER_FEEDBACK</code> in{" "}
+              <code className="small">.env.development</code>).
+            </p>
           )}
           <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Certificate draft (saved in wizard)</div>
           <div className="row g-2">

@@ -52,7 +52,7 @@ async function loginByRole(endpoint, credentials) {
 }
 
 function LoginPage() {
-  const showToast = useToast();
+  const { showToast } = useToast() ?? {};
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -237,7 +237,7 @@ function LoginPage() {
 
         setResult(loginResult);
         notifyAuthChanged();
-        if (showToast) showToast("Login successful.");
+        showToast?.("Login successful.");
         return;
       }
 

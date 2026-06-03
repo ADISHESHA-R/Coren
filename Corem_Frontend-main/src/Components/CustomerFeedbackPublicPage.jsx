@@ -1,8 +1,11 @@
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { useToast } from "./Toast.jsx";
 import {
   buildCustomerFeedbackFrontDoorUrl,
+  buildPublicCustomerFeedbackPostBody,
   resolvePublicCustomerFeedbackPostUrl,
+  validateCustomerFeedbackFormForSubmit,
 } from "../config/customerFeedbackPublic.js";
 
 const emptyForm = () => ({
@@ -24,10 +27,13 @@ const emptyForm = () => ({
 
 export default function CustomerFeedbackPublicPage() {
   const { siteId } = useParams();
+  const { showError } = useToast() ?? {};
   const [form, setForm] = useState(emptyForm);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
+  /** Set when dev stub or server says success but nothing was persisted (see message). */
+  const [submitNotice, setSubmitNotice] = useState("");
 
   const postUrl = useMemo(() => {
     const sid = String(siteId ?? "").trim();
@@ -49,28 +55,62 @@ export default function CustomerFeedbackPublicPage() {
       setError("Invalid feedback link (site id).");
       return;
     }
+    const validationMsg = validateCustomerFeedbackFormForSubmit(form);
+    if (validationMsg) {
+      setError(validationMsg);
+      return;
+    }
     setLoading(true);
+    setSubmitNotice("");
     try {
+      const payload = buildPublicCustomerFeedbackPostBody(form);
       const res = await fetch(postUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify(payload),
       });
       const text = await res.text();
       let msg = "";
+      let successFlag = true;
+      let stubResponse = false;
       try {
         const j = text ? JSON.parse(text) : {};
-        msg = j.message || j.error || "";
+        msg = j.message || j.error || j.detail || "";
+        if (typeof j.success === "boolean" && j.success === false) successFlag = false;
+        stubResponse =
+          j.stub === true ||
+          (typeof msg === "string" && msg.toLowerCase().includes("development stub"));
       } catch {
-        msg = text?.slice(0, 200) || "";
+        msg = text?.slice(0, 280) || "";
       }
       if (!res.ok) {
-        throw new Error(msg || `Request failed (${res.status})`);
+        let errMsg = msg || `Request failed (${res.status})`;
+        if (
+          import.meta.env.DEV &&
+          /no static resource|not found|404/i.test(String(errMsg)) &&
+          /customer-feedback/i.test(String(errMsg))
+        ) {
+          errMsg = `${errMsg} For local testing without this API route, set VITE_DEV_STUB_PUBLIC_CUSTOMER_FEEDBACK=true in .env.development and restart Vite. To persist for real, set it to false and implement POST /api/public/sites/{siteId}/customer-feedback on your backend (or change VITE_API_PROXY_TARGET).`;
+        }
+        throw new Error(errMsg);
+      }
+      if (!successFlag) {
+        throw new Error(msg || "The server did not accept this submission.");
+      }
+      if (stubResponse) {
+        setSubmitNotice(
+          msg ||
+            "This response came from the local dev stub — nothing was saved to your API, so the admin screen will stay empty. Set VITE_DEV_STUB_PUBLIC_CUSTOMER_FEEDBACK=false and restart Vite once your backend exposes POST /api/public/sites/{siteId}/customer-feedback.",
+        );
+      } else {
+        setSubmitNotice("");
       }
       setDone(true);
       setForm(emptyForm());
     } catch (err) {
-      setError(err?.message || "Could not submit feedback. Check your connection and try again.");
+      const m = err?.message || "Could not submit feedback. Check your connection and try again.";
+      showError?.(m);
+      setError(m);
     } finally {
       setLoading(false);
     }
@@ -89,7 +129,16 @@ export default function CustomerFeedbackPublicPage() {
     return (
       <div className="container py-4" style={{ maxWidth: "36rem" }}>
         <h1 className="h4 mb-3">Thank you</h1>
-        <p className="text-muted mb-0">Your feedback has been submitted.</p>
+        {submitNotice ? (
+          <>
+            <div className="alert alert-warning small" role="status">
+              {submitNotice}
+            </div>
+            <p className="text-muted small mb-0">Nothing was stored on the server, so the admin page will not show this submission.</p>
+          </>
+        ) : (
+          <p className="text-muted mb-0">Your feedback has been submitted.</p>
+        )}
       </div>
     );
   }
@@ -157,9 +206,17 @@ export default function CustomerFeedbackPublicPage() {
           ].map(([key, label]) => (
             <div className="col-12 col-md-4" key={key}>
               <label className="form-label small mb-0" htmlFor={`cfb-${key}`}>
-                {label}
+                {label} <span className="text-muted">(0–10)</span>
               </label>
-              <input id={`cfb-${key}`} className="form-control form-control-sm" value={form[key]} onChange={onChange(key)} />
+              <input
+                id={`cfb-${key}`}
+                type="number"
+                min={0}
+                max={10}
+                className="form-control form-control-sm"
+                value={form[key]}
+                onChange={onChange(key)}
+              />
             </div>
           ))}
           <div className="col-12 col-md-4">
@@ -168,6 +225,9 @@ export default function CustomerFeedbackPublicPage() {
             </label>
             <input
               id="cfb-likelihood"
+              type="number"
+              min={0}
+              max={10}
               className="form-control form-control-sm"
               value={form.likelihoodRecommend}
               onChange={onChange("likelihoodRecommend")}

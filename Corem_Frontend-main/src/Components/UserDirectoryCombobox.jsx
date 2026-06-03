@@ -3,9 +3,23 @@ import { createPortal } from "react-dom";
 import { avatarBackgroundForUser, getUserInitials } from "../utils/userDirectoryDisplay.js";
 import "../styles/user-directory-combobox.css";
 
+/** Many backends use `id`; some use `userId` for the same numeric key. */
+function directoryUserNumericId(o) {
+  if (!o || typeof o !== "object") return null;
+  const raw = o.id ?? o.userId ?? o.user_id;
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
 function primaryDisplayName(u) {
   if (!u) return "";
-  return String(u.name ?? "").trim() || String(u.email ?? "").trim() || (u.id != null ? `User ${u.id}` : "");
+  const idPart = directoryUserNumericId(u);
+  return (
+    String(u.name ?? "").trim() ||
+    String(u.email ?? "").trim() ||
+    (idPart != null ? `User ${idPart}` : "")
+  );
 }
 
 /**
@@ -38,11 +52,11 @@ export default function UserDirectoryCombobox({
     if (value == null || value === "") return null;
     const id = Number(value);
     if (!Number.isFinite(id)) return null;
-    return options.find((o) => Number(o.id) === id) ?? null;
+    return options.find((o) => directoryUserNumericId(o) === id) ?? null;
   }, [options, value]);
 
   const filtered = useMemo(() => {
-    const list = options.filter((o) => o.id != null);
+    const list = options.filter((o) => directoryUserNumericId(o) != null);
     const t = q.trim().toLowerCase();
     if (!t) return list;
     return list.filter((o) => {
@@ -159,17 +173,17 @@ export default function UserDirectoryCombobox({
                 <li className="udc-empty">No users match your search.</li>
               ) : (
                 filtered.map((u) => {
-                  const id = u.id;
+                  const uid = directoryUserNumericId(u);
                   const label = primaryDisplayName(u);
                   const sub = [u.employeeId, u.role].filter(Boolean).join(" · ");
                   return (
-                    <li key={id}>
+                    <li key={uid ?? label}>
                       <button
                         type="button"
                         className="udc-item"
                         role="option"
-                        aria-selected={String(id) === String(value)}
-                        onClick={() => pick(String(id))}
+                        aria-selected={uid != null && String(uid) === String(value)}
+                        onClick={() => pick(uid != null ? String(uid) : "")}
                       >
                         <span className="udc-avatar" style={{ background: avatarBackgroundForUser(u) }}>
                           {getUserInitials(u)}
@@ -208,6 +222,10 @@ export default function UserDirectoryCombobox({
               </span>
               <span className="udc-trigger-name">{primaryDisplayName(selected)}</span>
             </>
+          ) : value != null && String(value).trim() !== "" ? (
+            <span className="udc-trigger-name text-muted" title="User not in current directory page — id still saved">
+              User #{String(value).trim()}
+            </span>
           ) : (
             <span className="udc-trigger-placeholder">{placeholder}</span>
           )}

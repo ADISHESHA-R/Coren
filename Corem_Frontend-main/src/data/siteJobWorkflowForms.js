@@ -64,6 +64,137 @@ export function emptyTechnicianPaymentRow(slNo) {
   return { slNo, technicianName: "", technicianUserId: null, payments, totalPayment: "" };
 }
 
+/** Parse amount strings (allows commas); returns null for empty/invalid. */
+function parsePaymentAmountToNumber(amount) {
+  const raw = String(amount ?? "")
+    .replace(/,/g, "")
+    .trim();
+  if (raw === "") return null;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Sum Pay 1–Pay 6 amounts for display and API `totalPayment`. */
+export function sumTechnicianPaymentAmounts(payments) {
+  let sum = 0;
+  let any = false;
+  for (const p of payments || []) {
+    const n = parsePaymentAmountToNumber(p?.amount);
+    if (n == null) continue;
+    any = true;
+    sum += n;
+  }
+  if (!any) return "";
+  const rounded = Math.round(sum * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded);
+}
+
+function rawPaymentsFromTechnicianSrc(src) {
+  return Array.from({ length: TECHNICIAN_PAYMENT_SLOTS }, (_, j) => {
+    const p = Array.isArray(src?.payments) ? src.payments[j] : null;
+    if (p && typeof p === "object") return { date: p.date ?? "", amount: p.amount ?? "" };
+    const k = j + 1;
+    return {
+      date: src[`paymentDate${k}`] ?? src[`date${k}`] ?? "",
+      amount: src[`paymentAmount${k}`] ?? src[`amount${k}`] ?? "",
+    };
+  });
+}
+
+function technicianPaymentPairHasContent(p) {
+  return Boolean(String(p?.date ?? "").trim() || String(p?.amount ?? "").trim());
+}
+
+function technicianRowMergeKey(src) {
+  const tid = src?.technicianUserId ?? src?.employeeUserId ?? src?.userId;
+  const id = tid != null && tid !== "" && Number.isFinite(Number(tid)) ? Number(tid) : null;
+  if (id != null) return `id:${id}`;
+  const name = String(src?.technicianName ?? src?.name ?? "").trim().toLowerCase();
+  if (name) return `name:${name}`;
+  return null;
+}
+
+function buildMergedTechnicianPaymentBucketRows(rows) {
+  const pairs = [];
+  for (const src of rows) {
+    for (const p of rawPaymentsFromTechnicianSrc(src)) {
+      if (technicianPaymentPairHasContent(p)) {
+        pairs.push({ date: String(p.date ?? "").trim(), amount: String(p.amount ?? "").trim() });
+      }
+    }
+  }
+  const tid = rows[0]?.technicianUserId ?? rows[0]?.employeeUserId ?? rows[0]?.userId;
+  const technicianUserId =
+    tid != null && tid !== "" && Number.isFinite(Number(tid)) ? Number(tid) : null;
+  let technicianName = "";
+  for (const src of rows) {
+    const n = String(src?.technicianName ?? src?.name ?? "").trim();
+    if (n) {
+      technicianName = n;
+      break;
+    }
+  }
+  const outRows = [];
+  if (pairs.length === 0) {
+    const payments = Array.from({ length: TECHNICIAN_PAYMENT_SLOTS }, (_, j) => {
+      for (const src of rows) {
+        const p = rawPaymentsFromTechnicianSrc(src)[j];
+        if (technicianPaymentPairHasContent(p)) {
+          return { date: String(p.date ?? "").trim(), amount: String(p.amount ?? "").trim() };
+        }
+      }
+      return { date: "", amount: "" };
+    });
+    outRows.push({ technicianName, technicianUserId, payments, totalPayment: "" });
+    return outRows;
+  }
+  for (let i = 0; i < pairs.length; i += TECHNICIAN_PAYMENT_SLOTS) {
+    const chunk = pairs.slice(i, i + TECHNICIAN_PAYMENT_SLOTS);
+    const payments = Array.from({ length: TECHNICIAN_PAYMENT_SLOTS }, (_, j) =>
+      chunk[j] ? { ...chunk[j] } : { date: "", amount: "" },
+    );
+    outRows.push({ technicianName, technicianUserId, payments, totalPayment: "" });
+  }
+  return outRows;
+}
+
+/**
+ * Merge rows for the same linked user id or the same non-empty technician name (case-insensitive),
+ * preserving table order by first occurrence. Blank identity rows are not merged with each other.
+ * Use before {@link normalizeTechnicianPaymentLines} so one technician appears on one line when possible;
+ * more than six dated payments spill to additional rows for the same person.
+ */
+export function mergeTechnicianPaymentLinesByPerson(arr) {
+  const a = Array.isArray(arr) ? arr : [];
+  const buckets = new Map();
+  const bucketOrder = [];
+  const passthrough = [];
+
+  a.forEach((src, index) => {
+    const key = technicianRowMergeKey(src);
+    if (key == null) {
+      passthrough.push({ index, src });
+      return;
+    }
+    if (!buckets.has(key)) {
+      buckets.set(key, { firstIndex: index, rows: [] });
+      bucketOrder.push(key);
+    }
+    buckets.get(key).rows.push(src);
+  });
+
+  const segments = [];
+  for (const key of bucketOrder) {
+    const b = buckets.get(key);
+    segments.push({ index: b.firstIndex, rows: buildMergedTechnicianPaymentBucketRows(b.rows) });
+  }
+  for (const { index, src } of passthrough) {
+    segments.push({ index, rows: [src] });
+  }
+  segments.sort((x, y) => x.index - y.index);
+  return segments.flatMap((s) => s.rows);
+}
+
 export function emptyToolIssueRow(slNo) {
   return {
     slNo,
@@ -140,7 +271,7 @@ export function normalizeTechnicianPaymentLines(arr) {
       technicianName: src.technicianName ?? src.name ?? "",
       technicianUserId,
       payments,
-      totalPayment: src.totalPayment ?? src.total ?? "",
+      totalPayment: sumTechnicianPaymentAmounts(payments),
     });
   }
   return rows;

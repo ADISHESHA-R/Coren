@@ -1038,6 +1038,7 @@
   bottom: 1.5rem;
   left: 50%;
   transform: translateX(-50%);
+  max-width: min(92vw, 28rem);
   padding: 0.75rem 1.25rem;
   background: var(--toast-bg);
   color: var(--toast-fg);
@@ -1047,6 +1048,14 @@
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
   z-index: 9999;
   animation: toast-in 0.25s ease-out;
+  text-align: center;
+  line-height: 1.35;
+}
+
+.toast-notification--error {
+  background: #b42318;
+  color: #fff;
+  font-weight: 600;
 }
 
 @keyframes toast-in {

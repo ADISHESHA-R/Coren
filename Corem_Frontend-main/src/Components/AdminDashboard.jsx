@@ -9,7 +9,7 @@ import AdminNoticesPanel from "./AdminNoticesPanel";
 import AdminSiteJobWorkflow from "./AdminSiteJobWorkflow";
 import AttendancePhotoThumb from "./AttendancePhotoThumb.jsx";
 import UserDirectoryCombobox from "./UserDirectoryCombobox.jsx";
-import { avatarBackgroundForUser, getUserInitials } from "../utils/userDirectoryDisplay.js";
+import { useToast } from "./Toast.jsx";
 
 const SESSION_LIMIT_MS = 24 * 60 * 60 * 1000;
 const REFRESH_EARLY_MS = 60 * 1000;
@@ -169,13 +169,6 @@ function getSiteInChargeUserId(site) {
   return getRawInChargeUserId(site);
 }
 
-function parseInChargeUserIdNumber(entity) {
-  const s = getRawInChargeUserId(entity);
-  if (!s) return null;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : null;
-}
-
 /** Label for tables / read-only when API returns name or nested user. */
 function formatSiteInChargeDisplay(site) {
   if (!site || typeof site !== "object") return "—";
@@ -196,6 +189,15 @@ function inChargePayloadValue(inChargeUserId) {
   if (inChargeUserId === "" || inChargeUserId == null) return null;
   const n = Number(inChargeUserId);
   return Number.isFinite(n) ? n : null;
+}
+
+/** Ensure user row has numeric `id` for UserDirectoryCombobox (API may use `userId`). */
+function normalizeDirectoryUserRowForPicker(u) {
+  if (!u || typeof u !== "object") return null;
+  const raw = u.id ?? u.userId ?? u.user_id;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return { ...u, id: n };
 }
 
 /** Sites list size when merging in-charge onto dashboard site-wise stats. */
@@ -220,6 +222,37 @@ function findMergedSiteForStat(stat, sitesById) {
     if (site && String(site.jobCode ?? "").trim().toLowerCase() === jc) return site;
   }
   return null;
+}
+
+/**
+ * Re-apply in-charge user ids we saved in this session onto fresh dashboard + sites map.
+ * Without this, each `fetchDashboard()` replaces `siteStats` from the API and drops prior rows’ picks.
+ */
+function applyOverviewInChargePatches(dashboardPayload, sitesMap, patches) {
+  const p = patches && typeof patches === "object" ? patches : {};
+  const patchKeys = Object.keys(p);
+  const nextSm = sitesMap && typeof sitesMap === "object" ? { ...sitesMap } : {};
+  for (const k of patchKeys) {
+    if (!Object.prototype.hasOwnProperty.call(nextSm, k)) continue;
+    nextSm[k] = { ...(nextSm[k] || {}), inChargeUserId: p[k] };
+  }
+  if (!dashboardPayload || typeof dashboardPayload !== "object") {
+    return { dashboardData: dashboardPayload ?? null, sitesById: nextSm };
+  }
+  if (patchKeys.length === 0 || !Array.isArray(dashboardPayload.siteStats)) {
+    return { dashboardData: { ...dashboardPayload }, sitesById: nextSm };
+  }
+  return {
+    dashboardData: {
+      ...dashboardPayload,
+      siteStats: dashboardPayload.siteStats.map((row) => {
+        const k = String(row.siteId ?? row.id ?? "");
+        if (!k || !Object.prototype.hasOwnProperty.call(p, k)) return row;
+        return { ...row, inChargeUserId: p[k] };
+      }),
+    },
+    sitesById: nextSm,
+  };
 }
 
 /** Load sites (same list as Sites tab) so overview can show in-charge when dashboard stats omit it. */
@@ -266,8 +299,8 @@ async function fetchUsersMapForDashboardInCharge() {
     const { list } = parsePagedContent(data);
     const map = {};
     for (const u of list) {
-      const id = Number(u.id);
-      if (Number.isFinite(id)) map[id] = u;
+      const nu = normalizeDirectoryUserRowForPicker(u);
+      if (nu) map[nu.id] = nu;
     }
     return map;
   } catch {
@@ -275,46 +308,35 @@ async function fetchUsersMapForDashboardInCharge() {
   }
 }
 
-/** Site-wise stats cell: same visual language as UserDirectoryCombobox (avatar + name + meta). */
-function SiteStatInChargeCell({ stat, sitesById, usersById }) {
+/** Site-wise stats: assign in charge via same user directory as site create/edit (PUT /admin/sites/:id). */
+function SiteStatInChargeCell({ stat, sitesById, userOptions, savingSiteId, onInChargeChange }) {
   if (!stat || typeof stat !== "object") return "—";
-  const site = findMergedSiteForStat(stat, sitesById);
-  const idNum = parseInChargeUserIdNumber(stat) ?? parseInChargeUserIdNumber(site);
-  const user = idNum != null && usersById && typeof usersById === "object" ? usersById[idNum] : null;
+  const siteIdRaw = stat.siteId ?? stat.id;
+  if (siteIdRaw == null || siteIdRaw === "") return "—";
+  const mergedSite = findMergedSiteForStat(stat, sitesById);
+  const fromStat = getRawInChargeUserId(stat);
+  const fromSite = mergedSite ? getSiteInChargeUserId(mergedSite) : "";
+  const currentId = fromStat || fromSite || "";
+  const saving = String(savingSiteId ?? "") === String(siteIdRaw);
+  const opts = Array.isArray(userOptions) ? userOptions : [];
+  const disabledPick = opts.length === 0;
 
-  if (user) {
-    const line1 = String(user.name ?? "").trim() || String(user.email ?? "").trim() || `User ${user.id}`;
-    const sub = [user.employeeId, user.role].filter(Boolean).join(" · ");
-    return (
-      <div className="d-inline-flex align-items-center gap-2 text-start">
-        <span className="udc-avatar" style={{ background: avatarBackgroundForUser(user) }}>
-          {getUserInitials(user)}
-        </span>
-        <span className="d-flex flex-column lh-sm">
-          <span>{line1}</span>
-          {sub ? <span className="small text-muted">{sub}</span> : null}
-        </span>
-      </div>
-    );
-  }
-
-  const fromStat =
-    stat.inChargeUserName ??
-    stat.inChargeName ??
-    stat.inCharge?.name ??
-    stat.inChargeUser?.name ??
-    stat.inChargeUser?.fullName ??
-    stat.manager?.name ??
-    stat.managerName;
-  if (fromStat && String(fromStat).trim()) return String(fromStat).trim();
-
-  if (site) {
-    const t = formatSiteInChargeDisplay(site);
-    if (t !== "—") return t;
-  }
-
-  if (idNum != null) return <span className="text-muted">User #{idNum}</span>;
-  return "—";
+  return (
+    <div className="site-stat-incharge-cell" style={{ minWidth: 200, maxWidth: 280 }}>
+      <UserDirectoryCombobox
+        options={opts}
+        value={currentId}
+        onChange={(next) => {
+          if (String(next ?? "") === String(currentId ?? "")) return;
+          void onInChargeChange?.(siteIdRaw, stat, mergedSite, next);
+        }}
+        placeholder={disabledPick ? "Loading users…" : "Select user…"}
+        ariaLabel={`In charge for ${stat.siteName ?? "site"}`}
+        compact
+        disabled={saving || disabledPick}
+      />
+    </div>
+  );
 }
 
 const BLOOD_GROUPS = ["A_POSITIVE", "A_NEGATIVE", "B_POSITIVE", "B_NEGATIVE", "AB_POSITIVE", "AB_NEGATIVE", "O_POSITIVE", "O_NEGATIVE"];
@@ -325,6 +347,7 @@ export default function AdminDashboard({ onLogout }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
+  const { showToast, showError } = useToast() ?? {};
 
   const [view, setView] = useState("overview"); // 'overview' | 'users' | 'pending' | 'sites' | 'machinery' | 'notices' | 'siteWorkflow'
   const [workflowSiteId, setWorkflowSiteId] = useState(null);
@@ -360,6 +383,7 @@ export default function AdminDashboard({ onLogout }) {
   /** Client-only: narrow overview “Site-wise stats” table (list view). */
   const [overviewSiteStatsSearch, setOverviewSiteStatsSearch] = useState("");
   const [overviewSiteStatsQuickFilter, setOverviewSiteStatsQuickFilter] = useState("");
+  const [overviewSiteInChargeSavingId, setOverviewSiteInChargeSavingId] = useState(null);
   /** Client-only: narrow pending table rows on the current API page. */
   const [pendingListSearch, setPendingListSearch] = useState("");
   const [approvingId, setApprovingId] = useState(null);
@@ -402,6 +426,8 @@ export default function AdminDashboard({ onLogout }) {
   const [deleteSiteLoading, setDeleteSiteLoading] = useState(false);
 
   const refreshTimeoutRef = useRef(null);
+  /** siteId string -> inChargeUserId saved from overview table; merged on every `fetchDashboard` load. */
+  const overviewInChargePatchesRef = useRef({});
 
   /** Keep tab + workflow state aligned with `/admin/...` URL (shareable; works on Render with SPA fallback). */
   useEffect(() => {
@@ -468,12 +494,15 @@ export default function AdminDashboard({ onLogout }) {
 
   const handleWorkflowStepIndexChange = useCallback(
     (idx0) => {
-      const step1 = idx0 + 1;
+      // Clamp to STEPS.length (10) in AdminSiteJobWorkflow.jsx
+      const step1 = Math.min(Math.max(Number(idx0) + 1, 1), 10);
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
-          if (step1 <= 1) next.delete("step");
-          else next.set("step", String(step1));
+          // Always set `step` (including `step=1`). Deleting `step` for step 1 made `urlStep1Based`
+          // null, same as “no ?step in URL”, so loadAll treated it as “use server wizard step” and
+          // snapped the UI back (felt like a loop when jumping from a later step to step 1).
+          next.set("step", String(step1));
           return next;
         },
         { replace: true },
@@ -481,6 +510,14 @@ export default function AdminDashboard({ onLogout }) {
     },
     [setSearchParams],
   );
+
+  const handleWorkflowExit = useCallback(() => {
+    navigate("/admin/dashboard");
+  }, [navigate]);
+
+  const handleWorkflowNavigateSitesList = useCallback(() => {
+    navigate("/admin/sites");
+  }, [navigate]);
 
   const refreshSessionToken = useCallback(async () => {
     if (!localStorage.getItem("refreshToken")) return;
@@ -541,24 +578,30 @@ export default function AdminDashboard({ onLogout }) {
       }
       const data = await res.json().catch(() => ({}));
       if (res.ok && data?.success) {
-        setDashboardData(data.data || null);
+        const basePayload = data.data || null;
         const [sitesMap, usersMap] = await Promise.all([sitesMapPromise, usersMapPromise]);
-        setDashboardSitesById(sitesMap);
+        const merged = applyOverviewInChargePatches(basePayload, sitesMap, overviewInChargePatchesRef.current);
+        setDashboardData(merged.dashboardData);
+        setDashboardSitesById(merged.sitesById);
         setDashboardDirectoryUsersById(usersMap);
       } else {
-        setDashboardError(data?.message || "Failed to load dashboard.");
+        const msg = data?.message || "Failed to load dashboard.";
+        setDashboardError(msg);
+        showError?.(msg);
         setDashboardSitesById({});
         setDashboardDirectoryUsersById({});
         await Promise.all([sitesMapPromise.catch(() => {}), usersMapPromise.catch(() => {})]);
       }
     } catch {
-      setDashboardError("Failed to load dashboard.");
+      const msg = "Failed to load dashboard.";
+      setDashboardError(msg);
+      showError?.(msg);
       setDashboardSitesById({});
       setDashboardDirectoryUsersById({});
       await Promise.all([sitesMapPromise.catch(() => {}), usersMapPromise.catch(() => {})]);
     }
     setDashboardLoading(false);
-  }, []);
+  }, [showError]);
 
   const fetchUsers = useCallback(async () => {
     const authHeader = getAuthHeader();
@@ -769,10 +812,57 @@ export default function AdminDashboard({ onLogout }) {
     }
   }, [editUserId]);
 
-  const showSuccess = (msg) => {
-    setSuccessMessage(msg);
+  const showSuccess = useCallback((msg) => {
+    const m = String(msg || "").trim();
+    setSuccessMessage(m);
+    if (m) showToast?.(m);
     setTimeout(() => setSuccessMessage(""), 4000);
-  };
+  }, [showToast]);
+
+  const handleOverviewSiteInChargeChange = useCallback(
+    async (siteIdRaw, stat, mergedSite, nextUserIdStr) => {
+      const authHeader = getAuthHeader();
+      if (!authHeader || siteIdRaw == null || siteIdRaw === "") return;
+      const id = Number(siteIdRaw);
+      if (!Number.isFinite(id)) return;
+      setOverviewSiteInChargeSavingId(String(siteIdRaw));
+      try {
+        const base = mergedSite && typeof mergedSite === "object" ? mergedSite : {};
+        const payload = {
+          name: String(base.name ?? stat?.siteName ?? "").trim() || "Site",
+          jobCode: String(base.jobCode ?? stat?.jobCode ?? "").trim(),
+          address: String(base.address ?? "").trim(),
+          isActive: base.isActive !== undefined && base.isActive !== null ? Boolean(base.isActive) : true,
+          inChargeUserId: inChargePayloadValue(nextUserIdStr),
+        };
+        const res = await fetch(`${BASE_URL}/api/admin/sites/${id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", Authorization: authHeader },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data?.success) {
+          showSuccess(data.message || "In charge updated.");
+          const siteKey = String(id);
+          const patchedInChargeId = inChargePayloadValue(nextUserIdStr);
+          if (patchedInChargeId == null) {
+            delete overviewInChargePatchesRef.current[siteKey];
+          } else {
+            overviewInChargePatchesRef.current[siteKey] = patchedInChargeId;
+          }
+          await fetchDashboard();
+          if (view === "sites") fetchSites();
+        } else {
+          showError?.(data?.message || "Could not update in charge.");
+        }
+      } catch {
+        showError?.("Could not update in charge.");
+      } finally {
+        setOverviewSiteInChargeSavingId(null);
+      }
+    },
+    [showSuccess, showError, fetchDashboard, fetchSites, view],
+  );
 
   const closeSiteDetail = () => {
     setViewingSiteId(null);
@@ -1148,6 +1238,14 @@ export default function AdminDashboard({ onLogout }) {
     [dashboardData?.siteStats, overviewSiteStatsSearch, overviewSiteStatsQuickFilter],
   );
 
+  const dashboardInChargeUserOptions = useMemo(() => {
+    const map = dashboardDirectoryUsersById || {};
+    return Object.values(map)
+      .map((u) => normalizeDirectoryUserRowForPicker(u))
+      .filter(Boolean)
+      .sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? "")));
+  }, [dashboardDirectoryUsersById]);
+
   const filteredPendingListRows = useMemo(
     () => filterPendingListRowsLocal(pendingRequests, pendingListSearch),
     [pendingRequests, pendingListSearch],
@@ -1188,10 +1286,11 @@ export default function AdminDashboard({ onLogout }) {
         <AdminSiteJobWorkflow
           siteId={workflowSiteId}
           showSuccess={showSuccess}
+          showError={showError}
           urlStep1Based={urlStep1Based}
           onStepIndexChange={handleWorkflowStepIndexChange}
-          onExit={() => navigate("/admin/dashboard")}
-          onNavigateSitesList={() => navigate("/admin/sites")}
+          onExit={handleWorkflowExit}
+          onNavigateSitesList={handleWorkflowNavigateSitesList}
         />
       )}
 
@@ -1318,7 +1417,7 @@ export default function AdminDashboard({ onLogout }) {
                           </tr>
                         ) : (
                           filteredOverviewSiteStats.map((s) => (
-                          <tr key={s.siteId ?? s.siteName}>
+                          <tr key={`${String(s.siteId ?? s.id ?? "na")}-${String(s.jobCode ?? "")}`}>
                             <td>
                               {s.siteId != null ? (
                                 <button
@@ -1346,7 +1445,13 @@ export default function AdminDashboard({ onLogout }) {
                               )}
                             </td>
                             <td>
-                              <SiteStatInChargeCell stat={s} sitesById={dashboardSitesById} usersById={dashboardDirectoryUsersById} />
+                              <SiteStatInChargeCell
+                                stat={s}
+                                sitesById={dashboardSitesById}
+                                userOptions={dashboardInChargeUserOptions}
+                                savingSiteId={overviewSiteInChargeSavingId}
+                                onInChargeChange={handleOverviewSiteInChargeChange}
+                              />
                             </td>
                             <td>{s.todayAttendanceCount ?? 0}</td>
                             <td>{s.pendingApprovals ?? 0}</td>

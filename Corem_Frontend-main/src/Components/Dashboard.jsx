@@ -128,7 +128,7 @@ function Dashboard({ onLogout }) {
   const role = localStorage.getItem("authRole") || "User";
   const email = localStorage.getItem("email") || "";
   const name = localStorage.getItem("profileName") || email;
-  const showToast = useToast();
+  const { showToast } = useToast() ?? {};
   const prevRecordsRef = useRef(null);
   const [addRecordOpen, setAddRecordOpen] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
@@ -243,7 +243,7 @@ function Dashboard({ onLogout }) {
   }, []);
 
   useEffect(() => {
-    if (!isEmployee || !records.length || !showToast) {
+    if (!isEmployee || !records.length) {
       if (records.length) prevRecordsRef.current = records.map((r) => ({ key: recordKey(r), status: getRecordStatus(r) }));
       return;
     }
@@ -254,11 +254,11 @@ function Dashboard({ onLogout }) {
       for (const { key, status } of current) {
         const oldStatus = prevByKey[key];
         if (oldStatus === "PENDING" && status === "APPROVED") {
-          showToast("Approved");
+          showToast?.("Approved");
           break;
         }
         if (oldStatus === "PENDING" && status === "REJECTED") {
-          showToast("Rejected");
+          showToast?.("Rejected");
           break;
         }
       }

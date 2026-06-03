@@ -25,6 +25,52 @@ function apiProxy(env) {
   }
 }
 
+/**
+ * When the proxied API has no POST /api/public/sites/{id}/customer-feedback (Spring "No static resource"),
+ * respond locally so the public feedback page can be tested. Disable when your backend implements the route.
+ */
+function publicCustomerFeedbackDevStubPlugin(mode, env) {
+  const enabled =
+    mode === 'development' &&
+    (env.VITE_DEV_STUB_PUBLIC_CUSTOMER_FEEDBACK === 'true' || env.VITE_DEV_STUB_PUBLIC_CUSTOMER_FEEDBACK === '1')
+
+  return {
+    name: 'corem-public-customer-feedback-dev-stub',
+    enforce: 'pre',
+    configureServer(server) {
+      if (!enabled) return
+
+      const handler = (req, res, next) => {
+        if (req.method !== 'POST') return next()
+        const pathOnly = (req.url || '').split('?')[0]
+        if (!/^\/api\/public\/sites\/[^/]+\/customer-feedback\/?$/.test(pathOnly)) return next()
+
+        const chunks = []
+        req.on('data', (c) => chunks.push(c))
+        req.on('end', () => {
+          res.statusCode = 200
+          res.setHeader('Content-Type', 'application/json; charset=utf-8')
+          res.end(
+            JSON.stringify({
+              success: true,
+              stub: true,
+              message:
+                'Development stub: nothing was saved. Your API proxy target has no public customer-feedback route yet. Set VITE_DEV_STUB_PUBLIC_CUSTOMER_FEEDBACK=false and implement POST /api/public/sites/{siteId}/customer-feedback on the backend (or point VITE_API_PROXY_TARGET at an API that already has it).',
+            }),
+          )
+        })
+      }
+
+      const stack = server.middlewares.stack
+      if (Array.isArray(stack)) {
+        stack.unshift({ route: '', handle: handler })
+      } else {
+        server.middlewares.use(handler)
+      }
+    },
+  }
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const proxy = apiProxy(env)
@@ -38,6 +84,7 @@ export default defineConfig(({ mode }) => {
       proxy,
     },
     plugins: [
+      publicCustomerFeedbackDevStubPlugin(mode, env),
       react(),
       VitePWA({
         registerType: 'autoUpdate',
