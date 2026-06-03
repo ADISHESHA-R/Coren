@@ -96,7 +96,9 @@ function filterOverviewSiteStatsRows(rows, searchText, quickFilter) {
     out = out.filter((s) => {
       const name = String(s.siteName ?? "").toLowerCase();
       const jc = String(s.jobCode ?? "").toLowerCase();
-      const inch = String(s.inChargeUserName ?? s.inChargeName ?? "").toLowerCase();
+      const inch = String(
+        s.inChargeUserName ?? s.in_charge_user_name ?? s.inChargeName ?? s.in_charge_name ?? "",
+      ).toLowerCase();
       return name.includes(q) || jc.includes(q) || inch.includes(q);
     });
   }
@@ -150,15 +152,25 @@ function getRawInChargeUserId(entity) {
   const raw =
     entity.inChargeUserId ??
     entity.inchargeUserId ??
+    entity.in_charge_user_id ??
+    entity.incharge_user_id ??
     entity.inChargeId ??
     entity.inchargeId ??
+    entity.in_charge_id ??
     entity.managerUserId ??
+    entity.manager_user_id ??
     entity.siteManagerUserId ??
+    entity.site_manager_user_id ??
     entity.assignedUserId ??
+    entity.assigned_user_id ??
     entity.supervisorUserId ??
+    entity.supervisor_user_id ??
     entity.inCharge?.id ??
     entity.inCharge?.userId ??
     entity.inChargeUser?.id ??
+    entity.inChargeUser?.userId ??
+    entity.in_charge_user?.id ??
+    entity.in_charge_user?.userId ??
     entity.manager?.id ??
     entity.manager?.userId;
   if (raw == null || raw === "") return "";
@@ -174,9 +186,12 @@ function formatSiteInChargeDisplay(site) {
   if (!site || typeof site !== "object") return "—";
   const name =
     site.inChargeUserName ??
+    site.in_charge_user_name ??
     site.inChargeName ??
+    site.in_charge_name ??
     site.inCharge?.name ??
     site.inChargeUser?.name ??
+    site.in_charge_user?.name ??
     site.inCharge?.fullName ??
     site.manager?.name ??
     site.managerName;
@@ -189,6 +204,13 @@ function inChargePayloadValue(inChargeUserId) {
   if (inChargeUserId === "" || inChargeUserId == null) return null;
   const n = Number(inChargeUserId);
   return Number.isFinite(n) ? n : null;
+}
+
+/** Some APIs only bind snake_case JSON; sending both is safe for typical Jackson configs. */
+function siteInChargeRequestFields(nextUserIdStr) {
+  const iv = inChargePayloadValue(nextUserIdStr);
+  if (iv == null) return { inChargeUserId: null };
+  return { inChargeUserId: iv, in_charge_user_id: iv };
 }
 
 /** Ensure user row has numeric `id` for UserDirectoryCombobox (API may use `userId`). */
@@ -208,10 +230,21 @@ function siteDashboardMapKey(id) {
   return String(id);
 }
 
+/** Stable string key for a dashboard site row or site DTO (ids differ across endpoints). */
+function siteDashboardRowId(entity) {
+  if (!entity || typeof entity !== "object") return null;
+  return siteDashboardMapKey(entity.siteId ?? entity.id ?? entity.site_id);
+}
+
+function siteDtoPrimaryIdKey(site) {
+  if (!site || typeof site !== "object") return null;
+  return siteDashboardMapKey(site.id ?? site.siteId ?? site.site_id);
+}
+
 /** Match dashboard row to GET /sites row when ids differ but job code matches. */
 function findMergedSiteForStat(stat, sitesById) {
   if (!stat || !sitesById || typeof sitesById !== "object") return null;
-  const key = siteDashboardMapKey(stat.siteId ?? stat.id);
+  const key = siteDashboardRowId(stat);
   if (key != null) {
     const byId = sitesById[key];
     if (byId) return byId;
@@ -246,13 +279,52 @@ function applyOverviewInChargePatches(dashboardPayload, sitesMap, patches) {
     dashboardData: {
       ...dashboardPayload,
       siteStats: dashboardPayload.siteStats.map((row) => {
-        const k = String(row.siteId ?? row.id ?? "");
+        const k = siteDashboardRowId(row) ?? "";
         if (!k || !Object.prototype.hasOwnProperty.call(p, k)) return row;
         return { ...row, inChargeUserId: p[k] };
       }),
     },
     sitesById: nextSm,
   };
+}
+
+/**
+ * When dashboard `siteStats` omit in-charge but GET /admin/sites includes it, copy onto rows so the
+ * overview combobox has a value after reload (logout/login).
+ */
+function mergeSiteStatsInChargeFromSitesMap(dashboardPayload, sitesById) {
+  if (!dashboardPayload || typeof dashboardPayload !== "object" || !Array.isArray(dashboardPayload.siteStats)) {
+    return dashboardPayload;
+  }
+  const siteStats = dashboardPayload.siteStats.map((row) => {
+    const merged = findMergedSiteForStat(row, sitesById);
+    if (!merged) return row;
+    const fromSite = getRawInChargeUserId(merged);
+    if (!fromSite) return row;
+    const fromRow = getRawInChargeUserId(row);
+    if (fromRow) return row;
+    const n = inChargePayloadValue(fromSite);
+    return { ...row, inChargeUserId: n != null ? n : fromSite };
+  });
+  return { ...dashboardPayload, siteStats };
+}
+
+/** When site list rows omit in-charge but dashboard stats include it, fill the merged map entry. */
+function enrichSitesMapInChargeFromSiteStats(sitesById, siteStats) {
+  if (!sitesById || typeof sitesById !== "object") return sitesById || {};
+  const out = { ...sitesById };
+  if (!Array.isArray(siteStats)) return out;
+  for (const row of siteStats) {
+    const k = siteDashboardRowId(row);
+    if (k == null || !Object.prototype.hasOwnProperty.call(out, k)) continue;
+    const fromRow = getRawInChargeUserId(row);
+    if (!fromRow) continue;
+    const fromSite = getRawInChargeUserId(out[k]);
+    if (fromSite) continue;
+    const n = inChargePayloadValue(fromRow);
+    out[k] = { ...out[k], inChargeUserId: n != null ? n : fromRow };
+  }
+  return out;
 }
 
 /** Load sites (same list as Sites tab) so overview can show in-charge when dashboard stats omit it. */
@@ -272,7 +344,7 @@ async function fetchSitesMapForDashboardInCharge() {
     const { list } = parsePagedContent(data);
     const map = {};
     for (const site of list) {
-      const key = siteDashboardMapKey(site.id ?? site.siteId);
+      const key = siteDtoPrimaryIdKey(site);
       if (key != null) map[key] = site;
     }
     return map;
@@ -311,7 +383,7 @@ async function fetchUsersMapForDashboardInCharge() {
 /** Site-wise stats: assign in charge via same user directory as site create/edit (PUT /admin/sites/:id). */
 function SiteStatInChargeCell({ stat, sitesById, userOptions, savingSiteId, onInChargeChange }) {
   if (!stat || typeof stat !== "object") return "—";
-  const siteIdRaw = stat.siteId ?? stat.id;
+  const siteIdRaw = stat.siteId ?? stat.id ?? stat.site_id;
   if (siteIdRaw == null || siteIdRaw === "") return "—";
   const mergedSite = findMergedSiteForStat(stat, sitesById);
   const fromStat = getRawInChargeUserId(stat);
@@ -581,8 +653,10 @@ export default function AdminDashboard({ onLogout }) {
         const basePayload = data.data || null;
         const [sitesMap, usersMap] = await Promise.all([sitesMapPromise, usersMapPromise]);
         const merged = applyOverviewInChargePatches(basePayload, sitesMap, overviewInChargePatchesRef.current);
-        setDashboardData(merged.dashboardData);
-        setDashboardSitesById(merged.sitesById);
+        const withMergedInCharge = mergeSiteStatsInChargeFromSitesMap(merged.dashboardData, merged.sitesById);
+        const enrichedSites = enrichSitesMapInChargeFromSiteStats(merged.sitesById, withMergedInCharge?.siteStats);
+        setDashboardData(withMergedInCharge);
+        setDashboardSitesById(enrichedSites);
         setDashboardDirectoryUsersById(usersMap);
       } else {
         const msg = data?.message || "Failed to load dashboard.";
@@ -833,7 +907,7 @@ export default function AdminDashboard({ onLogout }) {
           jobCode: String(base.jobCode ?? stat?.jobCode ?? "").trim(),
           address: String(base.address ?? "").trim(),
           isActive: base.isActive !== undefined && base.isActive !== null ? Boolean(base.isActive) : true,
-          inChargeUserId: inChargePayloadValue(nextUserIdStr),
+          ...siteInChargeRequestFields(nextUserIdStr),
         };
         const res = await fetch(`${BASE_URL}/api/admin/sites/${id}`, {
           method: "PUT",
@@ -843,7 +917,7 @@ export default function AdminDashboard({ onLogout }) {
         const data = await res.json().catch(() => ({}));
         if (res.ok && data?.success) {
           showSuccess(data.message || "In charge updated.");
-          const siteKey = String(id);
+          const siteKey = siteDashboardRowId(stat) ?? String(id);
           const patchedInChargeId = inChargePayloadValue(nextUserIdStr);
           if (patchedInChargeId == null) {
             delete overviewInChargePatchesRef.current[siteKey];
@@ -886,7 +960,7 @@ export default function AdminDashboard({ onLogout }) {
           name: payload.name,
           jobCode: payload.jobCode,
           address: payload.address,
-          inChargeUserId: inChargePayloadValue(payload.inChargeUserId),
+          ...siteInChargeRequestFields(payload.inChargeUserId),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -921,7 +995,7 @@ export default function AdminDashboard({ onLogout }) {
           jobCode: payload.jobCode,
           address: payload.address,
           isActive: Boolean(payload.isActive),
-          inChargeUserId: inChargePayloadValue(payload.inChargeUserId),
+          ...siteInChargeRequestFields(payload.inChargeUserId),
         }),
       });
       const data = await res.json().catch(() => ({}));

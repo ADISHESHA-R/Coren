@@ -111,6 +111,19 @@ function coerceToolItemDateToIsoInput(raw) {
 /** Page size for GET /api/admin/users (User Management directory). */
 const USER_DIRECTORY_PAGE_SIZE = 500;
 
+/**
+ * Optional timeout for the workflow-only user-directory fetch (same page size as before).
+ * Uses `AbortSignal.timeout` when supported; otherwise behavior matches a plain fetch.
+ */
+const WORKFLOW_USER_LIST_FETCH_TIMEOUT_MS = 120_000;
+
+function userDirectoryFetchInit() {
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+    return { signal: AbortSignal.timeout(WORKFLOW_USER_LIST_FETCH_TIMEOUT_MS) };
+  }
+  return {};
+}
+
 const TOOL_ISSUE_CELL_FIELDS_BEFORE = [
   ["packingListSlNo", "text"],
   ["itemDescription", "text"],
@@ -908,6 +921,8 @@ export default function AdminSiteJobWorkflow({
   const [equipmentPortal, setEquipmentPortal] = useState(null);
   const [equipmentPortalLoadError, setEquipmentPortalLoadError] = useState("");
   const lastEquipmentPortalFetchRef = useRef({ year: null, month: null });
+  /** Bumps when a new workflow load starts the user-directory fetch; stale responses are ignored. */
+  const workflowUserDirectoryLoadSeqRef = useRef(0);
   /** Visual: which equipment row is being dragged (categoryIndex-itemIndex). */
   const [equipmentDragKey, setEquipmentDragKey] = useState(null);
   const [challengeLineRows, setChallengeLineRows] = useState(() => buildChallengeLineWorkflowState([], CHALLENGE_HEADS_FALLBACK));
@@ -1090,6 +1105,7 @@ export default function AdminSiteJobWorkflow({
     if (!siteId) return;
     setLoading(true);
     setError("");
+    setEmployeeOptions([]);
     const authHeader = getAuthHeader();
     if (!authHeader) {
       reportWorkflowFailure("Not authenticated. Returning to dashboard.");
@@ -1152,7 +1168,16 @@ export default function AdminSiteJobWorkflow({
           ? headsRes.data.data
           : CHALLENGE_HEADS_FALLBACK;
 
-      const [adv, tech, issues, chall, beh, reg, fb, mach, emp] = await Promise.all([
+      const { year: epY, month: epM } = parseYearMonthFromIntroToolsChecklist(merged.projectIntroduction?.toolsChecklistMonth);
+      lastEquipmentPortalFetchRef.current = { year: null, month: null };
+
+      const empSeq = ++workflowUserDirectoryLoadSeqRef.current;
+      const empPromise = adminFetchJson(
+        `${BASE_URL}/api/admin/users?page=0&size=${USER_DIRECTORY_PAGE_SIZE}`,
+        userDirectoryFetchInit(),
+      );
+
+      const [adv, tech, issues, chall, beh, reg, fb, mach, epRes] = await Promise.all([
         adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/advance-expense-lines`),
         adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/technician-payments`),
         adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/tool-issues`),
@@ -1163,7 +1188,9 @@ export default function AdminSiteJobWorkflow({
         ),
         adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/customer-feedback`),
         adminFetchJson(`${BASE_URL}/api/admin/machinery?siteId=${siteId}`),
-        adminFetchJson(`${BASE_URL}/api/admin/users?page=0&size=${USER_DIRECTORY_PAGE_SIZE}`),
+        adminFetchJson(
+          `${BASE_URL}/api/admin/sites/${siteId}/job-data/equipment-portal?year=${epY}&month=${epM}`,
+        ),
       ]);
 
       const advArr = Array.isArray(adv.data?.data) ? adv.data.data : [];
@@ -1192,20 +1219,6 @@ export default function AdminSiteJobWorkflow({
       if (mach.res.ok && mach.data?.success && Array.isArray(mach.data.data)) setMachineryList(mach.data.data);
       else setMachineryList([]);
 
-      if (emp.res.ok && emp.data?.success) {
-        const root = emp.data.data;
-        const rawList = Array.isArray(root?.content) ? root.content : Array.isArray(root) ? root : [];
-        const list = [...rawList].sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? "")));
-        setEmployeeOptions(list);
-      } else {
-        setEmployeeOptions([]);
-      }
-
-      const { year: epY, month: epM } = parseYearMonthFromIntroToolsChecklist(merged.projectIntroduction?.toolsChecklistMonth);
-      lastEquipmentPortalFetchRef.current = { year: null, month: null };
-      const epRes = await adminFetchJson(
-        `${BASE_URL}/api/admin/sites/${siteId}/job-data/equipment-portal?year=${epY}&month=${epM}`,
-      );
       setEquipmentPortalLoadError("");
       if (epRes.res.ok && epRes.data?.success && epRes.data.data != null) {
         let portal = normalizeEquipmentPortalPayload(epRes.data.data);
@@ -1232,7 +1245,27 @@ export default function AdminSiteJobWorkflow({
       onStepIndexChange?.(uiStep);
       setAttendanceBlock(0);
       setAttendanceDirtyCells(new Map());
+
+      setLoading(false);
+
+      try {
+        const emp = await empPromise;
+        if (empSeq !== workflowUserDirectoryLoadSeqRef.current) return;
+        if (emp.res.ok && emp.data?.success) {
+          const root = emp.data.data;
+          const rawList = Array.isArray(root?.content) ? root.content : Array.isArray(root) ? root : [];
+          const list = [...rawList].sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? "")));
+          setEmployeeOptions(list);
+        } else {
+          setEmployeeOptions([]);
+        }
+      } catch {
+        if (empSeq === workflowUserDirectoryLoadSeqRef.current) {
+          setEmployeeOptions([]);
+        }
+      }
     } catch (e) {
+      workflowUserDirectoryLoadSeqRef.current += 1;
       reportWorkflowFailure(e?.message || "Failed to load workflow.");
     }
     setLoading(false);
