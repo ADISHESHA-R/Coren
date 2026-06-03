@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useToast } from "./Toast.jsx";
 import {
   buildCustomerFeedbackFrontDoorUrl,
   buildPublicCustomerFeedbackPostBody,
   resolvePublicCustomerFeedbackPostUrl,
   validateCustomerFeedbackFormForSubmit,
+  validatePublicCustomerFeedbackInviteToken,
 } from "../config/customerFeedbackPublic.js";
 
 const emptyForm = () => ({
@@ -27,6 +28,8 @@ const emptyForm = () => ({
 
 export default function CustomerFeedbackPublicPage() {
   const { siteId } = useParams();
+  const [searchParams] = useSearchParams();
+  const inviteToken = useMemo(() => String(searchParams.get("token") ?? "").trim(), [searchParams]);
   const { showError } = useToast() ?? {};
   const [form, setForm] = useState(emptyForm);
   const [loading, setLoading] = useState(false);
@@ -42,6 +45,7 @@ export default function CustomerFeedbackPublicPage() {
   }, [siteId]);
 
   const invalidSite = !String(siteId ?? "").trim();
+  const inviteTokenError = validatePublicCustomerFeedbackInviteToken(inviteToken);
 
   const onChange = (key) => (e) => {
     const v = e.target.value;
@@ -55,6 +59,11 @@ export default function CustomerFeedbackPublicPage() {
       setError("Invalid feedback link (site id).");
       return;
     }
+    const tokenMsg = validatePublicCustomerFeedbackInviteToken(inviteToken);
+    if (tokenMsg) {
+      setError(tokenMsg);
+      return;
+    }
     const validationMsg = validateCustomerFeedbackFormForSubmit(form);
     if (validationMsg) {
       setError(validationMsg);
@@ -63,7 +72,7 @@ export default function CustomerFeedbackPublicPage() {
     setLoading(true);
     setSubmitNotice("");
     try {
-      const payload = buildPublicCustomerFeedbackPostBody(form);
+      const payload = buildPublicCustomerFeedbackPostBody(form, inviteToken);
       const res = await fetch(postUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -85,12 +94,17 @@ export default function CustomerFeedbackPublicPage() {
       }
       if (!res.ok) {
         let errMsg = msg || `Request failed (${res.status})`;
-        if (
-          import.meta.env.DEV &&
+        if (/invalid or expired/i.test(String(errMsg))) {
+          errMsg = `${errMsg} Use the full feedback link from your administrator (with ?token=…), or ask them to send a new invite.`;
+        } else if (
           /no static resource|not found|404/i.test(String(errMsg)) &&
           /customer-feedback/i.test(String(errMsg))
         ) {
-          errMsg = `${errMsg} For local testing without this API route, set VITE_DEV_STUB_PUBLIC_CUSTOMER_FEEDBACK=true in .env.development and restart Vite. To persist for real, set it to false and implement POST /api/public/sites/{siteId}/customer-feedback on your backend (or change VITE_API_PROXY_TARGET).`;
+          errMsg = `${errMsg} The API may require POST /api/public/sites/{siteId}/customer-feedback with a JSON body including **token** (invite) plus feedback fields. Configure VITE_PUBLIC_CUSTOMER_FEEDBACK_POST_URL_TEMPLATE at build time if your path differs.${
+            import.meta.env.DEV
+              ? " For local dev without the route, set VITE_DEV_STUB_PUBLIC_CUSTOMER_FEEDBACK=true in .env.development."
+              : ""
+          }`;
         }
         throw new Error(errMsg);
       }
@@ -125,6 +139,18 @@ export default function CustomerFeedbackPublicPage() {
     );
   }
 
+  if (inviteTokenError) {
+    return (
+      <div className="container py-4" style={{ maxWidth: "36rem" }}>
+        <h1 className="h4 mb-3">Customer feedback</h1>
+        <p className="text-danger mb-0">{inviteTokenError}</p>
+        <p className="text-muted small mt-3 mb-0">
+          Site id in this link: <strong>{siteId}</strong>
+        </p>
+      </div>
+    );
+  }
+
   if (done) {
     return (
       <div className="container py-4" style={{ maxWidth: "36rem" }}>
@@ -148,6 +174,12 @@ export default function CustomerFeedbackPublicPage() {
       <h1 className="h4 mb-1">Customer feedback</h1>
       <p className="text-muted small mb-4">
         Site <strong>{siteId}</strong>. You do not need an account to submit this form.
+        {inviteToken ? (
+          <>
+            {" "}
+            This session is tied to a secure invite link.
+          </>
+        ) : null}
       </p>
 
       <form onSubmit={onSubmit} className="border rounded-3 p-3 p-md-4 shadow-sm bg-body">
@@ -290,7 +322,7 @@ export default function CustomerFeedbackPublicPage() {
 
       <p className="small text-muted mt-3 mb-0">
         Public page URL (bookmark or share):{" "}
-        <code className="user-select-all">{buildCustomerFeedbackFrontDoorUrl(siteId)}</code>
+        <code className="user-select-all">{buildCustomerFeedbackFrontDoorUrl(siteId, inviteToken)}</code>
       </p>
       <p className="small mt-2 mb-0">
         <Link to="/">Back to sign in</Link>

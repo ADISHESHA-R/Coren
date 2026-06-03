@@ -1,7 +1,7 @@
-import { useCallback, useEffect, Fragment, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, Fragment, useId, useMemo, useRef, useState } from "react";
 import { refreshAccessToken } from "../utils/refreshAccessToken";
 import { API_BASE_URL as BASE_URL } from "../config/apiBaseUrl.js";
-import { buildCustomerFeedbackFrontDoorUrl } from "../config/customerFeedbackPublic.js";
+import { buildCustomerFeedbackFrontDoorUrl, getSiteCustomerFeedbackInviteToken } from "../config/customerFeedbackPublic.js";
 import {
   CHECKLIST_CATEGORY_OPTIONS,
   CHECKLIST_KEY_TO_LABEL,
@@ -1003,6 +1003,14 @@ export default function AdminSiteJobWorkflow({
     ];
   }, [filteredSiteAttendance]);
 
+  const { customerFeedbackShareUrl, customerFeedbackHasInviteToken } = useMemo(() => {
+    const tok = getSiteCustomerFeedbackInviteToken(site);
+    return {
+      customerFeedbackShareUrl: buildCustomerFeedbackFrontDoorUrl(site?.id ?? site?.siteId, tok),
+      customerFeedbackHasInviteToken: Boolean(tok),
+    };
+  }, [site]);
+
   const reportWorkflowFailure = useCallback(
     (message, { redirect = true } = {}) => {
       const m =
@@ -1359,6 +1367,19 @@ export default function AdminSiteJobWorkflow({
       cancelled = true;
     };
   }, [currentStepIndex, wizardData.projectIntroduction?.toolsChecklistMonth, siteId, loading]);
+
+  /** Paper template when the portal has no sections yet (covers SW-cached bundles or missed hydrate on fetch). */
+  useLayoutEffect(() => {
+    if (currentStepIndex !== 2) return;
+    if (!equipmentPortal || equipmentPortalLoadError) return;
+    const cats = equipmentPortal.categories;
+    if (!Array.isArray(cats) || cats.length === 0) {
+      const next = hydrateEquipmentPortalCategoriesWithPaperTemplate(equipmentPortal);
+      if (Array.isArray(next.categories) && next.categories.length > 0) {
+        setEquipmentPortal(next);
+      }
+    }
+  }, [currentStepIndex, equipmentPortal, equipmentPortalLoadError]);
 
   useEffect(() => {
     if (!toolChecklistActionMessage.text) return undefined;
@@ -4606,7 +4627,7 @@ export default function AdminSiteJobWorkflow({
                 type="text"
                 className="form-control form-control-sm"
                 readOnly
-                value={buildCustomerFeedbackFrontDoorUrl(site.id ?? site.siteId)}
+                value={customerFeedbackShareUrl}
               />
             </div>
             <div className="d-flex align-items-end gap-2 flex-wrap">
@@ -4614,7 +4635,7 @@ export default function AdminSiteJobWorkflow({
                 type="button"
                 className="btn btn-outline-secondary btn-sm"
                 onClick={() => {
-                  const url = buildCustomerFeedbackFrontDoorUrl(site.id ?? site.siteId);
+                  const url = customerFeedbackShareUrl;
                   void navigator.clipboard.writeText(url).then(
                     () => showSuccess?.("Public feedback link copied."),
                     () => showSuccess?.("Copy this link manually: " + url),
@@ -4634,6 +4655,12 @@ export default function AdminSiteJobWorkflow({
               </button>
             </div>
           </div>
+          {!customerFeedbackHasInviteToken ? (
+            <p className="small text-warning mb-3">
+              No invite token on this site record — the public form needs <code>?token=…</code> in the URL and the same token in the POST body. Expose a field such as{" "}
+              <code>customerFeedbackInviteToken</code> on <strong>GET /api/admin/sites/&#123;id&#125;</strong> (or paste a token from your invite flow into a custom link).
+            </p>
+          ) : null}
           {customerFeedbackParsed ? (
             <div className="row g-2 mb-3">
               <div className="col-md-6">

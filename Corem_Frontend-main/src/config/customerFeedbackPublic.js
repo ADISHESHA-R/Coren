@@ -3,11 +3,43 @@ import { API_BASE_URL } from "./apiBaseUrl.js";
 /**
  * Anonymous customer feedback POST (no JWT). Override if your backend path differs.
  * Use `{siteId}` placeholder. Relative paths are resolved against `API_BASE_URL`.
+ *
+ * ProjectC-style API: POST body must include a non-blank **token** (opaque invite) that belongs to
+ * `{siteId}`; the SPA should open `/customer-feedback/{siteId}?token=…` (see `buildCustomerFeedbackFrontDoorUrl`).
  * Examples:
  *   /api/public/sites/{siteId}/customer-feedback
  *   https://api.example.com/api/v1/public/feedback/{siteId}
  */
 const DEFAULT_POST_TEMPLATE = "/api/public/sites/{siteId}/customer-feedback";
+
+/** When not `"false"` / `"0"`, the public form requires `?token=` (production default). */
+export function isPublicCustomerFeedbackTokenRequired() {
+  const v = String(import.meta.env.VITE_PUBLIC_CUSTOMER_FEEDBACK_TOKEN_REQUIRED ?? "true")
+    .trim()
+    .toLowerCase();
+  return v !== "false" && v !== "0";
+}
+
+/**
+ * Best-effort read of invite token from admin site payloads (field names vary by API version).
+ */
+export function getSiteCustomerFeedbackInviteToken(site) {
+  if (!site || typeof site !== "object") return "";
+  const candidates = [
+    site.customerFeedbackInviteToken,
+    site.customerFeedbackToken,
+    site.publicFeedbackToken,
+    site.feedbackInviteToken,
+    site.feedbackPublicToken,
+    site.feedbackToken,
+    site.inviteToken,
+  ];
+  for (const c of candidates) {
+    const s = String(c ?? "").trim();
+    if (s) return s;
+  }
+  return "";
+}
 
 /** Score fields stored inside `feedbackJson` on the server (see parseCustomerFeedbackRecord). */
 const CUSTOMER_FEEDBACK_RATING_KEYS = [
@@ -53,16 +85,22 @@ export function sanitizeCustomerFeedbackFormFields(form) {
 
 /**
  * POST body for anonymous customer feedback.
- * - Default `feedback_json`: `{ feedbackJson: "<stringified inner>" }` — matches admin GET `data.feedbackJson`.
- * - `flat`: send the inner object only (legacy / alternate backends). Set `VITE_PUBLIC_CUSTOMER_FEEDBACK_BODY_MODE=flat`.
+ * - Default `feedback_json`: `{ token?, feedbackJson: "<stringified inner>" }` — matches admin GET `data.feedbackJson`.
+ * - `flat`: `{ token?, ...inner }`. Set `VITE_PUBLIC_CUSTOMER_FEEDBACK_BODY_MODE=flat`.
+ * - **token** (invite) is required by ProjectC `POST /api/public/sites/{siteId}/customer-feedback`; omit only when testing with `VITE_PUBLIC_CUSTOMER_FEEDBACK_TOKEN_REQUIRED=false`.
  */
-export function buildPublicCustomerFeedbackPostBody(form) {
+export function buildPublicCustomerFeedbackPostBody(form, inviteToken) {
   const mode = String(import.meta.env.VITE_PUBLIC_CUSTOMER_FEEDBACK_BODY_MODE ?? "feedback_json")
     .trim()
     .toLowerCase();
   const inner = sanitizeCustomerFeedbackFormFields(form);
-  if (mode === "flat") return inner;
-  return { feedbackJson: JSON.stringify(inner) };
+  const token = String(inviteToken ?? "").trim();
+  const withToken = (body) => {
+    if (!token) return body;
+    return { token, ...body };
+  };
+  if (mode === "flat") return withToken(inner);
+  return withToken({ feedbackJson: JSON.stringify(inner) });
 }
 
 /**
@@ -91,6 +129,15 @@ export function validateCustomerFeedbackFormForSubmit(form) {
   return "";
 }
 
+/** True when the invite token is missing but required for submit (see `isPublicCustomerFeedbackTokenRequired`). */
+export function validatePublicCustomerFeedbackInviteToken(inviteToken) {
+  if (!isPublicCustomerFeedbackTokenRequired()) return "";
+  if (!String(inviteToken ?? "").trim()) {
+    return "This link is missing the invite token. Open the full URL your administrator sent you (it should include ?token=…), or ask them to resend the feedback link.";
+  }
+  return "";
+}
+
 /**
  * Full URL for POST (no Authorization header). Same-origin in dev when `API_BASE_URL` is "".
  */
@@ -109,12 +156,15 @@ export function resolvePublicCustomerFeedbackPostUrl(siteId) {
 
 /**
  * Shareable SPA URL for customers (no login). Respects Vite `base` when non-root.
+ * Pass **inviteToken** when the API requires `?token=` (ProjectC public feedback).
  */
-export function buildCustomerFeedbackFrontDoorUrl(siteId) {
+export function buildCustomerFeedbackFrontDoorUrl(siteId, inviteToken) {
   const id = encodeURIComponent(String(siteId ?? "").trim());
+  const token = String(inviteToken ?? "").trim();
+  const qs = token ? `?token=${encodeURIComponent(token)}` : "";
   const base = (import.meta.env.BASE_URL || "/").replace(/\/$/, "");
   if (typeof window === "undefined") {
-    return `${base}/customer-feedback/${id}`;
+    return `${base}/customer-feedback/${id}${qs}`;
   }
-  return `${window.location.origin}${base}/customer-feedback/${id}`;
+  return `${window.location.origin}${base}/customer-feedback/${id}${qs}`;
 }
