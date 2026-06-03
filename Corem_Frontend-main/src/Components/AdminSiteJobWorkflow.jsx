@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, Fragment, useId, useMemo, useRef, useState } from "react";
 import { refreshAccessToken } from "../utils/refreshAccessToken";
 import { API_BASE_URL as BASE_URL } from "../config/apiBaseUrl.js";
-import { buildCustomerFeedbackFrontDoorUrl, getSiteCustomerFeedbackInviteToken } from "../config/customerFeedbackPublic.js";
+import {
+  buildCustomerFeedbackFrontDoorUrl,
+  getCustomerFeedbackInviteTokenFromAdminDto,
+  getSiteCustomerFeedbackInviteToken,
+} from "../config/customerFeedbackPublic.js";
 import {
   CHECKLIST_CATEGORY_OPTIONS,
   CHECKLIST_KEY_TO_LABEL,
@@ -1019,12 +1023,13 @@ export default function AdminSiteJobWorkflow({
   }, [filteredSiteAttendance]);
 
   const { customerFeedbackShareUrl, customerFeedbackHasInviteToken } = useMemo(() => {
-    const tok = getSiteCustomerFeedbackInviteToken(site);
+    const tok =
+      getSiteCustomerFeedbackInviteToken(site) || getCustomerFeedbackInviteTokenFromAdminDto(customerFeedback);
     return {
       customerFeedbackShareUrl: buildCustomerFeedbackFrontDoorUrl(site?.id ?? site?.siteId, tok),
       customerFeedbackHasInviteToken: Boolean(tok),
     };
-  }, [site]);
+  }, [site, customerFeedback]);
 
   const reportWorkflowFailure = useCallback(
     (message, { redirect = true } = {}) => {
@@ -4690,8 +4695,9 @@ export default function AdminSiteJobWorkflow({
           </div>
           {!customerFeedbackHasInviteToken ? (
             <p className="small text-warning mb-3">
-              No invite token on this site record — the public form needs <code>?token=…</code> in the URL and the same token in the POST body. Expose a field such as{" "}
-              <code>customerFeedbackInviteToken</code> on <strong>GET /api/admin/sites/&#123;id&#125;</strong> (or paste a token from your invite flow into a custom link).
+              No invite token found — the public form needs <code>?token=…</code> in the URL and the same token in the POST body. Expose a token on{" "}
+              <strong>GET /api/admin/sites/&#123;id&#125;</strong> (e.g. <code>customerFeedbackInviteToken</code>) or on{" "}
+              <strong>GET /api/admin/sites/&#123;id&#125;/customer-feedback</strong> (e.g. <code>token</code> on the invite DTO), or paste a token from your invite flow into a custom link.
             </p>
           ) : null}
           {customerFeedbackParsed ? (

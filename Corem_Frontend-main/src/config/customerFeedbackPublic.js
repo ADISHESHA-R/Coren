@@ -41,6 +41,29 @@ export function getSiteCustomerFeedbackInviteToken(site) {
   return "";
 }
 
+/**
+ * Invite token from **GET /api/admin/sites/{id}/customer-feedback** when the backend returns it here
+ * (e.g. FeedbackInviteResponse) but not on **GET /api/admin/sites/{id}**.
+ */
+export function getCustomerFeedbackInviteTokenFromAdminDto(data) {
+  if (!data || typeof data !== "object") return "";
+  const candidates = [
+    data.token,
+    data.inviteToken,
+    data.feedbackInviteToken,
+    data.customerFeedbackInviteToken,
+    data.publicFeedbackToken,
+    data.feedbackToken,
+    data.feedbackInvite?.token,
+    data.invite?.token,
+  ];
+  for (const c of candidates) {
+    const s = String(c ?? "").trim();
+    if (s) return s;
+  }
+  return "";
+}
+
 /** Score fields stored inside `feedbackJson` on the server (see parseCustomerFeedbackRecord). */
 const CUSTOMER_FEEDBACK_RATING_KEYS = [
   "productQuality",
