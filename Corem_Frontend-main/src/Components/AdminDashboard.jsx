@@ -148,33 +148,37 @@ async function fetchAdminUsersForSiteInchargeDropdown() {
 
 /** Read assigned user id from site or dashboard row DTO (backend naming may vary). */
 function getRawInChargeUserId(entity) {
-  if (!entity || typeof entity !== "object") return "";
-  const raw =
-    entity.inChargeUserId ??
-    entity.inchargeUserId ??
-    entity.in_charge_user_id ??
-    entity.incharge_user_id ??
-    entity.inChargeId ??
-    entity.inchargeId ??
-    entity.in_charge_id ??
-    entity.managerUserId ??
-    entity.manager_user_id ??
-    entity.siteManagerUserId ??
-    entity.site_manager_user_id ??
-    entity.assignedUserId ??
-    entity.assigned_user_id ??
-    entity.supervisorUserId ??
-    entity.supervisor_user_id ??
-    entity.inCharge?.id ??
-    entity.inCharge?.userId ??
-    entity.inChargeUser?.id ??
-    entity.inChargeUser?.userId ??
-    entity.in_charge_user?.id ??
-    entity.in_charge_user?.userId ??
-    entity.manager?.id ??
-    entity.manager?.userId;
-  if (raw == null || raw === "") return "";
-  return String(raw);
+  const walk = (e, depth) => {
+    if (!e || typeof e !== "object" || depth > 1) return "";
+    const raw =
+      e.inChargeUserId ??
+      e.inchargeUserId ??
+      e.in_charge_user_id ??
+      e.incharge_user_id ??
+      e.inChargeId ??
+      e.inchargeId ??
+      e.in_charge_id ??
+      e.managerUserId ??
+      e.manager_user_id ??
+      e.siteManagerUserId ??
+      e.site_manager_user_id ??
+      e.assignedUserId ??
+      e.assigned_user_id ??
+      e.supervisorUserId ??
+      e.supervisor_user_id ??
+      e.inCharge?.id ??
+      e.inCharge?.userId ??
+      e.inChargeUser?.id ??
+      e.inChargeUser?.userId ??
+      e.in_charge_user?.id ??
+      e.in_charge_user?.userId ??
+      e.manager?.id ??
+      e.manager?.userId;
+    if (raw != null && raw !== "") return String(raw);
+    if (e.site && typeof e.site === "object") return walk(e.site, depth + 1);
+    return "";
+  };
+  return walk(entity, 0);
 }
 
 function getSiteInChargeUserId(site) {
@@ -323,6 +327,61 @@ function enrichSitesMapInChargeFromSiteStats(sitesById, siteStats) {
     if (fromSite) continue;
     const n = inChargePayloadValue(fromRow);
     out[k] = { ...out[k], inChargeUserId: n != null ? n : fromRow };
+  }
+  return out;
+}
+
+const SITE_DETAIL_INCHARGE_FETCH_CONCURRENCY = 6;
+
+async function fetchAdminSiteDetailForDashboard(siteKey, authHeader) {
+  if (!authHeader || siteKey == null || siteKey === "") return null;
+  try {
+    const res = await fetch(`${BASE_URL}/api/admin/sites/${encodeURIComponent(String(siteKey))}`, {
+      headers: { Authorization: authHeader },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data?.success === false || data?.data == null) return null;
+    return data.data;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Paged GET /admin/sites often omits in-charge; detail GET /admin/sites/{id} usually includes it.
+ * Fetch detail only for overview rows that still have no in-charge after list + stats merge.
+ */
+async function enrichSitesByIdFromDetailWhenInChargeMissing(sitesById, siteStats, authHeader) {
+  if (!authHeader || !sitesById || typeof sitesById !== "object" || !Array.isArray(siteStats)) {
+    return sitesById || {};
+  }
+  const keys = new Set();
+  for (const row of siteStats) {
+    const k = siteDashboardRowId(row);
+    if (k == null) continue;
+    if (getRawInChargeUserId(row)) continue;
+    const merged = findMergedSiteForStat(row, sitesById);
+    if (merged && getRawInChargeUserId(merged)) continue;
+    keys.add(k);
+  }
+  if (keys.size === 0) return sitesById;
+  const out = { ...sitesById };
+  const idList = [...keys];
+  for (let i = 0; i < idList.length; i += SITE_DETAIL_INCHARGE_FETCH_CONCURRENCY) {
+    const chunk = idList.slice(i, i + SITE_DETAIL_INCHARGE_FETCH_CONCURRENCY);
+    const details = await Promise.all(chunk.map((siteKey) => fetchAdminSiteDetailForDashboard(siteKey, authHeader)));
+    for (let j = 0; j < chunk.length; j++) {
+      const siteKey = chunk[j];
+      const detail = details[j];
+      if (!detail || typeof detail !== "object") continue;
+      const dk = siteDtoPrimaryIdKey(detail) ?? siteKey;
+      const base = out[siteKey] || out[String(dk)] || {};
+      const blended = { ...base, ...detail };
+      out[String(siteKey)] = blended;
+      if (String(dk) !== String(siteKey)) {
+        out[String(dk)] = { ...(out[String(dk)] || {}), ...detail };
+      }
+    }
   }
   return out;
 }
@@ -653,8 +712,14 @@ export default function AdminDashboard({ onLogout }) {
         const basePayload = data.data || null;
         const [sitesMap, usersMap] = await Promise.all([sitesMapPromise, usersMapPromise]);
         const merged = applyOverviewInChargePatches(basePayload, sitesMap, overviewInChargePatchesRef.current);
-        const withMergedInCharge = mergeSiteStatsInChargeFromSitesMap(merged.dashboardData, merged.sitesById);
-        const enrichedSites = enrichSitesMapInChargeFromSiteStats(merged.sitesById, withMergedInCharge?.siteStats);
+        const statsRows = Array.isArray(merged.dashboardData?.siteStats) ? merged.dashboardData.siteStats : [];
+        const sitesWithDetail = await enrichSitesByIdFromDetailWhenInChargeMissing(
+          merged.sitesById || {},
+          statsRows,
+          authHeader,
+        );
+        const withMergedInCharge = mergeSiteStatsInChargeFromSitesMap(merged.dashboardData, sitesWithDetail);
+        const enrichedSites = enrichSitesMapInChargeFromSiteStats(sitesWithDetail, withMergedInCharge?.siteStats);
         setDashboardData(withMergedInCharge);
         setDashboardSitesById(enrichedSites);
         setDashboardDirectoryUsersById(usersMap);
