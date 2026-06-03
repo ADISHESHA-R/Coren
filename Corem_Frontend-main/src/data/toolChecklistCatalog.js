@@ -181,6 +181,93 @@ export function getSeededToolChecklistCategories() {
   ];
 }
 
+/**
+ * Same paper rows as {@link getSeededToolChecklistCategories}, in equipment-portal category shape.
+ * Used by {@link hydrateEquipmentPortalCategoriesWithPaperTemplate} when the portal has no categories yet,
+ * or as the source list merged into empty A–K sections that already exist on the server.
+ */
+export function buildSeededEquipmentPortalCategoriesFromPaperTemplate() {
+  const seeded = getSeededToolChecklistCategories();
+  return seeded.map((cat, i) => ({
+    id: null,
+    title: `${cat.key}. ${CHECKLIST_KEY_TO_LABEL[cat.key] || cat.label}`,
+    sortOrder: i,
+    items: (cat.items || []).map((it, ii) => ({
+      id: null,
+      lineOrder: ii,
+      itemDescription: String(it.description ?? ""),
+      uom: String(it.uom ?? ""),
+      qty: String(it.qty ?? ""),
+      dateNote:
+        it.itemDate != null && String(it.itemDate).trim() !== "" ? String(it.itemDate).trim() : null,
+      dayPresent: {},
+    })),
+  }));
+}
+
+/** Leading "A." / "B." style letter for standard checklist sections (must be A, B, C, I, J, or K). */
+export function parseEquipmentPortalCategoryKey(title) {
+  const t = String(title ?? "").trim();
+  const m = t.match(/^([ABCIJK])\s*\.\s*/i);
+  if (!m) return null;
+  const k = m[1].toUpperCase();
+  return CHECKLIST_CATEGORY_KEYS.includes(k) ? k : null;
+}
+
+function equipmentPortalItemHasSavedContent(it) {
+  if (!it || typeof it !== "object") return false;
+  if (String(it.itemDescription ?? "").trim() !== "") return true;
+  if (String(it.uom ?? "").trim() !== "") return true;
+  if (String(it.qty ?? "").trim() !== "") return true;
+  if (it.dateNote != null && String(it.dateNote).trim() !== "") return true;
+  const dp = it.dayPresent && typeof it.dayPresent === "object" ? it.dayPresent : {};
+  for (const v of Object.values(dp)) {
+    if (v === true) return true;
+  }
+  return false;
+}
+
+/**
+ * After a GET, ensure the paper template appears on first visit:
+ * - Empty `categories` → full A–K seeded tree.
+ * - Existing A–K sections with no saved rows (no text, dates, or day ticks) → fill items from the paper list.
+ * Sections that already have any real data are left unchanged.
+ */
+export function hydrateEquipmentPortalCategoriesWithPaperTemplate(portal) {
+  if (!portal || typeof portal !== "object") return portal;
+  const categories = Array.isArray(portal.categories) ? portal.categories : [];
+  const seededFull = buildSeededEquipmentPortalCategoriesFromPaperTemplate();
+  const itemsByKey = {};
+  for (const c of seededFull) {
+    const key = parseEquipmentPortalCategoryKey(c.title);
+    if (key) itemsByKey[key] = c.items || [];
+  }
+  if (categories.length === 0) {
+    return { ...portal, categories: seededFull };
+  }
+  const next = categories.map((cat) => {
+    const key = parseEquipmentPortalCategoryKey(cat.title);
+    if (!key || !itemsByKey[key]) return cat;
+    const items = Array.isArray(cat.items) ? cat.items : [];
+    const hasContent = items.some(equipmentPortalItemHasSavedContent);
+    if (hasContent) return cat;
+    return {
+      ...cat,
+      items: itemsByKey[key].map((it, ii) => ({
+        id: null,
+        lineOrder: ii,
+        itemDescription: String(it.itemDescription ?? ""),
+        uom: String(it.uom ?? ""),
+        qty: String(it.qty ?? ""),
+        dateNote:
+          it.dateNote != null && String(it.dateNote).trim() !== "" ? String(it.dateNote).trim() : null,
+        dayPresent: {},
+      })),
+    };
+  });
+  return { ...portal, categories: next };
+}
+
 export function normalizeToolChecklistFromWizard(toolChecklist) {
   const skeleton = defaultToolCategories();
   let categories = Array.isArray(toolChecklist?.categories) ? [...toolChecklist.categories] : [...skeleton];

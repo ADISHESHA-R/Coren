@@ -77,6 +77,9 @@ export default defineConfig(({ mode }) => {
 
   return {
     server: {
+      port: 5173,
+      /** Do not fall back to 5174+ — this project is expected on 5173 for local docs and bookmarks. */
+      strictPort: true,
       proxy,
     },
     /** `npm run preview` uses this server — mirror dev proxy so `/api` still works without CORS. */

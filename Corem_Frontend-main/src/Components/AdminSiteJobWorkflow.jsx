@@ -9,6 +9,7 @@ import {
   formatYearMonthHeading,
   getMachineryChecklistKey,
   getSeededToolChecklistCategories,
+  hydrateEquipmentPortalCategoriesWithPaperTemplate,
   isToolChecklistEmptyForAutoSeed,
   normalizeToolChecklistFromWizard,
   toolDayBlockLength,
@@ -1203,6 +1204,7 @@ export default function AdminSiteJobWorkflow({
         if (portal.year == null || portal.month == null) {
           portal = { ...portal, year: portal.year ?? epY, month: portal.month ?? epM };
         }
+        portal = hydrateEquipmentPortalCategoriesWithPaperTemplate(portal);
         setEquipmentPortal(portal);
         lastEquipmentPortalFetchRef.current = { year: epY, month: epM };
       } else {
@@ -1262,6 +1264,7 @@ export default function AdminSiteJobWorkflow({
       if (portal.year == null || portal.month == null) {
         portal = { ...portal, year: portal.year ?? want.year, month: portal.month ?? want.month };
       }
+      portal = hydrateEquipmentPortalCategoriesWithPaperTemplate(portal);
       setEquipmentPortal(portal);
       lastEquipmentPortalFetchRef.current = { year: want.year, month: want.month };
     } else {
@@ -1277,7 +1280,7 @@ export default function AdminSiteJobWorkflow({
       if (!portalEligibleForLayoutApi(nextPortal)) {
         setToolChecklistActionMessage({
           kind: "info",
-          text: 'Rows reordered locally. Use “Save & next” once so new rows/sections receive IDs — then drag-and-drop saves order via PUT …/equipment-portal/layout.',
+          text: 'Rows reordered locally. Use “Save & next” once so new rows/sections receive IDs — then drag-and-drop can save order to the server.',
         });
         return;
       }
@@ -1343,6 +1346,7 @@ export default function AdminSiteJobWorkflow({
         if (portal.year == null || portal.month == null) {
           portal = { ...portal, year: portal.year ?? want.year, month: portal.month ?? want.month };
         }
+        portal = hydrateEquipmentPortalCategoriesWithPaperTemplate(portal);
         setEquipmentPortal(portal);
         lastEquipmentPortalFetchRef.current = { year: want.year, month: want.month };
       } else {
@@ -1423,7 +1427,17 @@ export default function AdminSiteJobWorkflow({
         });
         if (!res.ok || data?.success === false) throw new Error(data?.message || "Failed to save equipment portal.");
         if (data?.data != null && !silent) {
-          const next = normalizeEquipmentPortalPayload(data.data);
+          let next = normalizeEquipmentPortalPayload(data.data);
+          // Keep month context if the server response omits year/month (PUT body still had availabilityYear/Month).
+          if (
+            (next.year == null || next.month == null) &&
+            portal.year != null &&
+            portal.month != null &&
+            Number.isFinite(Number(portal.year)) &&
+            Number.isFinite(Number(portal.month))
+          ) {
+            next = { ...next, year: next.year ?? Number(portal.year), month: next.month ?? Number(portal.month) };
+          }
           setEquipmentPortal(next);
           if (next.year != null && next.month != null) {
             lastEquipmentPortalFetchRef.current = { year: next.year, month: next.month };
@@ -2671,11 +2685,6 @@ export default function AdminSiteJobWorkflow({
       {currentStepIndex === 2 && (
         <div>
           <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Daily checklist — tools (by category)</div>
-          <p className="site-job-workflow__muted mb-2">
-            Data is loaded and saved with <strong>GET/PUT …/job-data/equipment-portal</strong>. Reorder rows or move them between sections by dragging the{" "}
-            <strong>⋮⋮</strong> handle — when everything has been saved once (numeric IDs), order syncs with <strong>PUT …/equipment-portal/layout</strong>. The month for day columns follows{" "}
-            <strong>Tools checklist month</strong> on Project introduction (YYYY-MM), or the current calendar month when blank.
-          </p>
           {equipmentPortalLoadError ? (
             <div className="alert alert-warning py-2 small mb-2" role="status">
               {equipmentPortalLoadError}
@@ -2724,8 +2733,8 @@ export default function AdminSiteJobWorkflow({
                   <div className="border rounded p-3 mb-4 bg-body-secondary">
                     <p className="mb-2 fw-semibold">No checklist sections yet</p>
                     <p className="small text-muted mb-3">
-                      The equipment portal returned no categories for this site (first visit or empty save). The tables below are only the{" "}
-                      <strong>machinery catalog</strong> — not the daily checklist grid. Add sections here, then use <strong>Save &amp; next</strong> to store them on the server.
+                      No checklist sections for this month yet. The tables below are only the <strong>machinery catalog</strong> — not the daily checklist grid. Add sections here, then use{" "}
+                      <strong>Save &amp; next</strong> to store them.
                     </p>
                     <ul className="small mb-3">
                       <li>
@@ -3019,8 +3028,8 @@ export default function AdminSiteJobWorkflow({
           )}
           <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static mt-3">Machinery catalog (this site)</div>
           <p className="site-job-workflow__muted small mb-2">
-            In <strong>Machinery</strong>, set <strong>Tools checklist category</strong> (A–K) so imports match portal sections whose title starts with that letter (e.g.{" "}
-            <strong>A.</strong>). New categories and rows below are persisted when you use <strong>Save &amp; next</strong> (equipment portal PUT).
+            In <strong>Machinery</strong>, set <strong>Tools checklist category</strong> (A–K) so imports match sections whose title starts with that letter (e.g. <strong>A.</strong>). New categories and rows below are saved when you use{" "}
+            <strong>Save &amp; next</strong>.
           </p>
           {machineryByCategory.length === 0 ? (
             <p className="text-muted small">No machinery rows for this site.</p>
@@ -3229,11 +3238,7 @@ export default function AdminSiteJobWorkflow({
       {currentStepIndex === 3 && (
         <div>
           <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Site advance received &amp; paid</div>
-          <p className="site-job-workflow__muted small mb-2">
-            Matches the paper register. Saved with{" "}
-            <strong>PUT /api/admin/sites/&#123;id&#125;/job-data/advance-expense-lines</strong> and{" "}
-            <strong>technician-payments</strong> as JSON arrays when you use <strong>Save &amp; next</strong>.
-          </p>
+          <p className="site-job-workflow__muted small mb-2">Matches the paper register. Use <strong>Save &amp; next</strong> to save this step.</p>
           <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Details of dispersion of expenses</div>
           <div className="d-flex gap-2 mb-2 align-items-center flex-wrap">
             <button
@@ -3517,8 +3522,7 @@ export default function AdminSiteJobWorkflow({
             Site team members movement register
           </div>
           <p className="site-job-workflow__muted small mb-3">
-            Matches the paper register. Saved with your workflow via <strong>PUT …/wizard</strong> when you use{" "}
-            <strong>Save &amp; next</strong>.
+            Matches the paper register. Use <strong>Save &amp; next</strong> to save this step.
           </p>
           <div className="row g-2 mb-3">
             <div className="col-12 col-md-6">
@@ -3694,9 +3698,6 @@ export default function AdminSiteJobWorkflow({
       {currentStepIndex === 5 && (
         <div>
           <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Tools missing / damage / repair</div>
-          <p className="site-job-workflow__muted small mb-2">
-            Saved with <strong>PUT .../job-data/tool-issues</strong> as a JSON array.
-          </p>
           <div className="d-flex gap-2 mb-2 align-items-center flex-wrap">
             <button
               type="button"
@@ -3842,10 +3843,7 @@ export default function AdminSiteJobWorkflow({
       {currentStepIndex === 6 && (
         <div>
           <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Challenges at site</div>
-          <p className="site-job-workflow__muted small mb-2">
-            One row per challenge head (from <strong>/api/meta/challenge-line-heads</strong> or built-in list). Saved with{" "}
-            <strong>PUT .../job-data/challenge-lines</strong>.
-          </p>
+          <p className="site-job-workflow__muted small mb-2">One row per challenge head (from admin settings or the built-in list). Use <strong>Save &amp; next</strong> to save this step.</p>
           <div className="d-flex gap-2 mb-2 align-items-center flex-wrap">
             <button
               type="button"
@@ -4026,9 +4024,7 @@ export default function AdminSiteJobWorkflow({
       {currentStepIndex === 7 && (
         <div>
           <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Site behaviour report</div>
-          <p className="site-job-workflow__muted small mb-2">
-            Grid: tick and date when an issue applies to a member. Saved with <strong>PUT .../job-data/behaviour-report</strong> as JSON.
-          </p>
+          <p className="site-job-workflow__muted small mb-2">Tick and date when an issue applies to a member. Use <strong>Save &amp; next</strong> to save this step.</p>
           <div className="d-flex gap-2 mb-2 align-items-center flex-wrap">
             <button
               type="button"
@@ -4203,17 +4199,15 @@ export default function AdminSiteJobWorkflow({
         <div>
           <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Site team attendance register</div>
           <p className="site-job-workflow__muted small mb-2">
-            Codes: <strong>P</strong> Present, <strong>A</strong> Absent, <strong>S</strong> Sick, <strong>HQ</strong> HQ duty, <strong>LS</strong> Leave/shift off, <strong>INJ</strong> Injury. Cell updates use{" "}
-            <strong>PUT .../job-data/attendance-register-cells</strong> when you save this step.
+            Codes: <strong>P</strong> Present, <strong>A</strong> Absent, <strong>S</strong> Sick, <strong>HQ</strong> HQ duty, <strong>LS</strong> Leave/shift off, <strong>INJ</strong> Injury. Use{" "}
+            <strong>Save &amp; next</strong> to save this step.
           </p>
           <div className="site-job-workflow__att-submissions site-job-workflow__panel border rounded p-2 mb-3">
             <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static site-job-workflow__section-bar--compact">
               Employee attendance (photo check-ins)
             </div>
             <p className="site-job-workflow__muted small mb-2">
-              Same flow as the Attendance Portal: employees submit with <strong>photo + site + shift</strong>. Rows come from{" "}
-              <strong>GET /api/admin/attendance</strong> for <strong>site id {siteId}</strong> only ({site.name ?? "this site"}). That is separate from the{" "}
-              <strong>daily code register</strong> below (paper-style P/A/S cells)—checkmarks there do not create portal rows.
+              Employees submit with <strong>photo + site + shift</strong>. Rows shown here are for <strong>{site.name ?? "this site"}</strong> only. This is separate from the <strong>daily code register</strong> below (paper-style P/A/S cells).
             </p>
             <div className="d-flex flex-wrap gap-1 mb-2 site-job-workflow__att-status-tabs align-items-center">
               {["ALL", "PENDING", "APPROVED", "REJECTED"].map((tab) => (
@@ -4453,7 +4447,7 @@ export default function AdminSiteJobWorkflow({
             </div>
           ) : null}
           <p className="site-job-workflow__muted small mb-2">
-            {`Server rows follow the site roster. Rows you add here are only on this screen until you reload; cell saves still use each user's id.`}
+            Rows follow the site roster. Rows you add here stay on this screen until you reload the page.
           </p>
           {!attendanceRegister ? (
             <p className="text-muted">No register data returned for this site.</p>
@@ -4550,10 +4544,7 @@ export default function AdminSiteJobWorkflow({
                 <h3 id="site-workflow-att-reject-title" className="h6 mb-2">
                   Reject attendance request
                 </h3>
-                <p className="small text-muted mb-2">
-                  Optionally provide a reason. The employee may see it. Uses the same endpoint as Pending Approvals:{" "}
-                  <strong>PUT /api/admin/attendance/{'{id}'}/approve</strong> with status REJECTED.
-                </p>
+                <p className="small text-muted mb-2">Optionally provide a reason. The employee may see it.</p>
                 <textarea
                   className="form-control mb-2"
                   placeholder="Rejection reason (optional)"
@@ -4606,8 +4597,7 @@ export default function AdminSiteJobWorkflow({
           </table>
           <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Customer feedback (read-only)</div>
           <p className="site-job-workflow__muted small mb-2">
-            Share the link below with your customer. Submissions do not require a login. After they submit, use{" "}
-            <strong>Refresh feedback</strong> (or leave and re-open this step) to load the latest record from the API.
+            Share the link below with your customer. Submissions do not require a login. After they submit, use <strong>Refresh feedback</strong> (or leave and re-open this step) to load the latest.
           </p>
           <div className="d-flex flex-wrap gap-2 align-items-start mb-3">
             <div className="flex-grow-1" style={{ minWidth: "12rem" }}>
@@ -4715,9 +4705,7 @@ export default function AdminSiteJobWorkflow({
             </div>
           ) : (
             <p className="text-muted small mb-3">
-              No customer feedback record yet for this site. If the client already submitted, press <strong>Refresh feedback</strong>{" "}
-              above, or confirm the public form is not using the dev stub (see <code className="small">VITE_DEV_STUB_PUBLIC_CUSTOMER_FEEDBACK</code> in{" "}
-              <code className="small">.env.development</code>).
+              No customer feedback record yet for this site. If the client already submitted, press <strong>Refresh feedback</strong> above.
             </p>
           )}
           <div className="site-job-workflow__section-bar site-job-workflow__section-bar--static">Certificate draft (saved in wizard)</div>
