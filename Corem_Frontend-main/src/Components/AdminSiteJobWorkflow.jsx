@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, Fragment, useId, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { refreshAccessToken } from "../utils/refreshAccessToken";
 import { API_BASE_URL as BASE_URL } from "../config/apiBaseUrl.js";
 import {
@@ -1610,8 +1611,10 @@ export default function AdminSiteJobWorkflow({
     async (targetIndex0) => {
       if (targetIndex0 === currentStepIndexRef.current) return;
       if (loading) return;
-      setSaving(true);
-      setError("");
+      flushSync(() => {
+        setSaving(true);
+        setError("");
+      });
       try {
         await executeStepSave({ advance: false, silent: true });
         setCurrentStepIndex(targetIndex0);
@@ -1619,7 +1622,7 @@ export default function AdminSiteJobWorkflow({
       } catch (e) {
         reportWorkflowFailure(e?.message || "Could not save this step before switching away. Fix errors or use Save & next, then try again.");
       } finally {
-        setSaving(false);
+        flushSync(() => setSaving(false));
       }
     },
     [loading, executeStepSave, reportWorkflowFailure],
@@ -1674,14 +1677,17 @@ export default function AdminSiteJobWorkflow({
   }, [siteAttRejectId, siteAttRejectReason, refreshSiteAttendanceList, showSuccess, reportWorkflowFailure]);
 
   const handleNext = async () => {
-    setSaving(true);
-    setError("");
+    flushSync(() => {
+      setSaving(true);
+      setError("");
+    });
     try {
       await executeStepSave({ advance: true, silent: false });
     } catch (e) {
       reportWorkflowFailure(e?.message || "Save failed. Nothing was saved for this step.");
+    } finally {
+      flushSync(() => setSaving(false));
     }
-    setSaving(false);
   };
 
   useEffect(() => {
@@ -1726,12 +1732,41 @@ export default function AdminSiteJobWorkflow({
     executeStepSave,
   ]);
 
+  /** Snapshot used by Save / tab-switch / autosave — must run before any early return (Rules of Hooks). */
+  useLayoutEffect(() => {
+    saveCtxRef.current = {
+      currentStepIndex,
+      equipmentPortal,
+      advanceLines,
+      technicianPaymentLines,
+      toolIssueLines,
+      challengeLineRows,
+      behaviourState,
+      attendanceDirtyCells,
+      attendanceBlock,
+      site,
+    };
+  }, [
+    currentStepIndex,
+    equipmentPortal,
+    advanceLines,
+    technicianPaymentLines,
+    toolIssueLines,
+    challengeLineRows,
+    behaviourState,
+    attendanceDirtyCells,
+    attendanceBlock,
+    site,
+  ]);
+
   const handleBack = async () => {
     const n = Math.max(0, currentStepIndexRef.current - 1);
     if (n === currentStepIndexRef.current) return;
     if (loading) return;
-    setSaving(true);
-    setError("");
+    flushSync(() => {
+      setSaving(true);
+      setError("");
+    });
     try {
       await executeStepSave({ advance: false, silent: true });
       setCurrentStepIndex(n);
@@ -1739,7 +1774,7 @@ export default function AdminSiteJobWorkflow({
     } catch (e) {
       reportWorkflowFailure(e?.message || "Could not save before going to the previous step.");
     } finally {
-      setSaving(false);
+      flushSync(() => setSaving(false));
     }
   };
 
@@ -1994,19 +2029,6 @@ export default function AdminSiteJobWorkflow({
   ];
 
   const wfSiteAttPortal = workflowTableFilters.site_att_portal || { search: "", cols: {} };
-
-  saveCtxRef.current = {
-    currentStepIndex,
-    equipmentPortal,
-    advanceLines,
-    technicianPaymentLines,
-    toolIssueLines,
-    challengeLineRows,
-    behaviourState,
-    attendanceDirtyCells,
-    attendanceBlock,
-    site,
-  };
 
   return (
     <section className="dashboard-section site-job-workflow">
