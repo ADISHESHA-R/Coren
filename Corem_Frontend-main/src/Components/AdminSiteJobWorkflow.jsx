@@ -1032,10 +1032,8 @@ export default function AdminSiteJobWorkflow({
   }, [site, customerFeedback]);
 
   const reportWorkflowFailure = useCallback(
-    (message, { redirect = true } = {}) => {
-      const m =
-        String(message || "").trim() ||
-        "Something went wrong. You will be returned to the admin dashboard.";
+    (message, { redirect = false } = {}) => {
+      const m = String(message || "").trim() || "Something went wrong.";
       setError(m);
       showError?.(m);
       if (redirect) {

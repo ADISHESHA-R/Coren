@@ -96,10 +96,7 @@ function filterOverviewSiteStatsRows(rows, searchText, quickFilter) {
     out = out.filter((s) => {
       const name = String(s.siteName ?? "").toLowerCase();
       const jc = String(s.jobCode ?? "").toLowerCase();
-      const inch = String(
-        s.inChargeUserName ?? s.in_charge_user_name ?? s.inChargeName ?? s.in_charge_name ?? "",
-      ).toLowerCase();
-      return name.includes(q) || jc.includes(q) || inch.includes(q);
+      return name.includes(q) || jc.includes(q);
     });
   }
   if (quickFilter === "pending") out = out.filter((s) => Number(s.pendingApprovals ?? 0) > 0);
@@ -217,259 +214,6 @@ function siteInChargeRequestFields(nextUserIdStr) {
   return { inChargeUserId: iv, in_charge_user_id: iv };
 }
 
-/** Ensure user row has numeric `id` for UserDirectoryCombobox (API may use `userId`). */
-function normalizeDirectoryUserRowForPicker(u) {
-  if (!u || typeof u !== "object") return null;
-  const raw = u.id ?? u.userId ?? u.user_id;
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return null;
-  return { ...u, id: n };
-}
-
-/** Sites list size when merging in-charge onto dashboard site-wise stats. */
-const DASHBOARD_SITES_FOR_INCHARGE_SIZE = 500;
-
-function siteDashboardMapKey(id) {
-  if (id == null || id === "") return null;
-  return String(id);
-}
-
-/** Stable string key for a dashboard site row or site DTO (ids differ across endpoints). */
-function siteDashboardRowId(entity) {
-  if (!entity || typeof entity !== "object") return null;
-  return siteDashboardMapKey(entity.siteId ?? entity.id ?? entity.site_id);
-}
-
-function siteDtoPrimaryIdKey(site) {
-  if (!site || typeof site !== "object") return null;
-  return siteDashboardMapKey(site.id ?? site.siteId ?? site.site_id);
-}
-
-/** Match dashboard row to GET /sites row when ids differ but job code matches. */
-function findMergedSiteForStat(stat, sitesById) {
-  if (!stat || !sitesById || typeof sitesById !== "object") return null;
-  const key = siteDashboardRowId(stat);
-  if (key != null) {
-    const byId = sitesById[key];
-    if (byId) return byId;
-  }
-  const jc = String(stat.jobCode ?? "").trim().toLowerCase();
-  if (!jc) return null;
-  for (const site of Object.values(sitesById)) {
-    if (site && String(site.jobCode ?? "").trim().toLowerCase() === jc) return site;
-  }
-  return null;
-}
-
-/**
- * Re-apply in-charge user ids we saved in this session onto fresh dashboard + sites map.
- * Without this, each `fetchDashboard()` replaces `siteStats` from the API and drops prior rows’ picks.
- */
-function applyOverviewInChargePatches(dashboardPayload, sitesMap, patches) {
-  const p = patches && typeof patches === "object" ? patches : {};
-  const patchKeys = Object.keys(p);
-  const nextSm = sitesMap && typeof sitesMap === "object" ? { ...sitesMap } : {};
-  for (const k of patchKeys) {
-    if (!Object.prototype.hasOwnProperty.call(nextSm, k)) continue;
-    nextSm[k] = { ...(nextSm[k] || {}), inChargeUserId: p[k] };
-  }
-  if (!dashboardPayload || typeof dashboardPayload !== "object") {
-    return { dashboardData: dashboardPayload ?? null, sitesById: nextSm };
-  }
-  if (patchKeys.length === 0 || !Array.isArray(dashboardPayload.siteStats)) {
-    return { dashboardData: { ...dashboardPayload }, sitesById: nextSm };
-  }
-  return {
-    dashboardData: {
-      ...dashboardPayload,
-      siteStats: dashboardPayload.siteStats.map((row) => {
-        const k = siteDashboardRowId(row) ?? "";
-        if (!k || !Object.prototype.hasOwnProperty.call(p, k)) return row;
-        return { ...row, inChargeUserId: p[k] };
-      }),
-    },
-    sitesById: nextSm,
-  };
-}
-
-/**
- * When dashboard `siteStats` omit in-charge but GET /admin/sites includes it, copy onto rows so the
- * overview combobox has a value after reload (logout/login).
- */
-function mergeSiteStatsInChargeFromSitesMap(dashboardPayload, sitesById) {
-  if (!dashboardPayload || typeof dashboardPayload !== "object" || !Array.isArray(dashboardPayload.siteStats)) {
-    return dashboardPayload;
-  }
-  const siteStats = dashboardPayload.siteStats.map((row) => {
-    const merged = findMergedSiteForStat(row, sitesById);
-    if (!merged) return row;
-    const fromSite = getRawInChargeUserId(merged);
-    if (!fromSite) return row;
-    const fromRow = getRawInChargeUserId(row);
-    if (fromRow) return row;
-    const n = inChargePayloadValue(fromSite);
-    return { ...row, inChargeUserId: n != null ? n : fromSite };
-  });
-  return { ...dashboardPayload, siteStats };
-}
-
-/** When site list rows omit in-charge but dashboard stats include it, fill the merged map entry. */
-function enrichSitesMapInChargeFromSiteStats(sitesById, siteStats) {
-  if (!sitesById || typeof sitesById !== "object") return sitesById || {};
-  const out = { ...sitesById };
-  if (!Array.isArray(siteStats)) return out;
-  for (const row of siteStats) {
-    const k = siteDashboardRowId(row);
-    if (k == null || !Object.prototype.hasOwnProperty.call(out, k)) continue;
-    const fromRow = getRawInChargeUserId(row);
-    if (!fromRow) continue;
-    const fromSite = getRawInChargeUserId(out[k]);
-    if (fromSite) continue;
-    const n = inChargePayloadValue(fromRow);
-    out[k] = { ...out[k], inChargeUserId: n != null ? n : fromRow };
-  }
-  return out;
-}
-
-const SITE_DETAIL_INCHARGE_FETCH_CONCURRENCY = 6;
-
-async function fetchAdminSiteDetailForDashboard(siteKey, authHeader) {
-  if (!authHeader || siteKey == null || siteKey === "") return null;
-  try {
-    const res = await fetch(`${BASE_URL}/api/admin/sites/${encodeURIComponent(String(siteKey))}`, {
-      headers: { Authorization: authHeader },
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data?.success === false || data?.data == null) return null;
-    return data.data;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Paged GET /admin/sites often omits in-charge; detail GET /admin/sites/{id} usually includes it.
- * Fetch detail only for overview rows that still have no in-charge after list + stats merge.
- */
-async function enrichSitesByIdFromDetailWhenInChargeMissing(sitesById, siteStats, authHeader) {
-  if (!authHeader || !sitesById || typeof sitesById !== "object" || !Array.isArray(siteStats)) {
-    return sitesById || {};
-  }
-  const keys = new Set();
-  for (const row of siteStats) {
-    const k = siteDashboardRowId(row);
-    if (k == null) continue;
-    if (getRawInChargeUserId(row)) continue;
-    const merged = findMergedSiteForStat(row, sitesById);
-    if (merged && getRawInChargeUserId(merged)) continue;
-    keys.add(k);
-  }
-  if (keys.size === 0) return sitesById;
-  const out = { ...sitesById };
-  const idList = [...keys];
-  for (let i = 0; i < idList.length; i += SITE_DETAIL_INCHARGE_FETCH_CONCURRENCY) {
-    const chunk = idList.slice(i, i + SITE_DETAIL_INCHARGE_FETCH_CONCURRENCY);
-    const details = await Promise.all(chunk.map((siteKey) => fetchAdminSiteDetailForDashboard(siteKey, authHeader)));
-    for (let j = 0; j < chunk.length; j++) {
-      const siteKey = chunk[j];
-      const detail = details[j];
-      if (!detail || typeof detail !== "object") continue;
-      const dk = siteDtoPrimaryIdKey(detail) ?? siteKey;
-      const base = out[siteKey] || out[String(dk)] || {};
-      const blended = { ...base, ...detail };
-      out[String(siteKey)] = blended;
-      if (String(dk) !== String(siteKey)) {
-        out[String(dk)] = { ...(out[String(dk)] || {}), ...detail };
-      }
-    }
-  }
-  return out;
-}
-
-/** Load sites (same list as Sites tab) so overview can show in-charge when dashboard stats omit it. */
-async function fetchSitesMapForDashboardInCharge() {
-  const authHeader = getAuthHeader();
-  if (!authHeader) return {};
-  try {
-    const qs = buildSitesListQuery({
-      page: 0,
-      size: DASHBOARD_SITES_FOR_INCHARGE_SIZE,
-      search: "",
-      isActive: undefined,
-    });
-    const res = await fetch(`${BASE_URL}/api/admin/sites?${qs}`, { headers: { Authorization: authHeader } });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data?.success === false) return {};
-    const { list } = parsePagedContent(data);
-    const map = {};
-    for (const site of list) {
-      const key = siteDtoPrimaryIdKey(site);
-      if (key != null) map[key] = site;
-    }
-    return map;
-  } catch {
-    return {};
-  }
-}
-
-/** User id -> row from GET /admin/users for resolving in-charge display on dashboard. */
-async function fetchUsersMapForDashboardInCharge() {
-  const authHeader = getAuthHeader();
-  if (!authHeader) return {};
-  try {
-    const qs = buildUsersListQuery({
-      page: 0,
-      size: SITE_INCHARGE_USER_PAGE_SIZE,
-      search: "",
-      role: "",
-      status: "",
-    });
-    const res = await fetch(`${BASE_URL}/api/admin/users?${qs}`, { headers: { Authorization: authHeader } });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data?.success === false) return {};
-    const { list } = parsePagedContent(data);
-    const map = {};
-    for (const u of list) {
-      const nu = normalizeDirectoryUserRowForPicker(u);
-      if (nu) map[nu.id] = nu;
-    }
-    return map;
-  } catch {
-    return {};
-  }
-}
-
-/** Site-wise stats: assign in charge via same user directory as site create/edit (PUT /admin/sites/:id). */
-function SiteStatInChargeCell({ stat, sitesById, userOptions, savingSiteId, onInChargeChange }) {
-  if (!stat || typeof stat !== "object") return "—";
-  const siteIdRaw = stat.siteId ?? stat.id ?? stat.site_id;
-  if (siteIdRaw == null || siteIdRaw === "") return "—";
-  const mergedSite = findMergedSiteForStat(stat, sitesById);
-  const fromStat = getRawInChargeUserId(stat);
-  const fromSite = mergedSite ? getSiteInChargeUserId(mergedSite) : "";
-  const currentId = fromStat || fromSite || "";
-  const saving = String(savingSiteId ?? "") === String(siteIdRaw);
-  const opts = Array.isArray(userOptions) ? userOptions : [];
-  const disabledPick = opts.length === 0;
-
-  return (
-    <div className="site-stat-incharge-cell" style={{ minWidth: 200, maxWidth: 280 }}>
-      <UserDirectoryCombobox
-        options={opts}
-        value={currentId}
-        onChange={(next) => {
-          if (String(next ?? "") === String(currentId ?? "")) return;
-          void onInChargeChange?.(siteIdRaw, stat, mergedSite, next);
-        }}
-        placeholder={disabledPick ? "Loading users…" : "Select user…"}
-        ariaLabel={`In charge for ${stat.siteName ?? "site"}`}
-        compact
-        disabled={saving || disabledPick}
-      />
-    </div>
-  );
-}
-
 const BLOOD_GROUPS = ["A_POSITIVE", "A_NEGATIVE", "B_POSITIVE", "B_NEGATIVE", "AB_POSITIVE", "AB_NEGATIVE", "O_POSITIVE", "O_NEGATIVE"];
 const ROLES = [{ value: "EMPLOYEE", label: "Employee" }, { value: "ADMIN", label: "Admin" }];
 const EMPLOYEE_STATUSES = ["ACTIVE", "INACTIVE", "SUSPENDED"];
@@ -485,10 +229,6 @@ export default function AdminDashboard({ onLogout }) {
   const [dashboardData, setDashboardData] = useState(null);
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState("");
-  /** siteId -> site from GET /admin/sites for merging in-charge into overview table */
-  const [dashboardSitesById, setDashboardSitesById] = useState({});
-  /** user id -> user from GET /admin/users for in-charge avatar row on overview */
-  const [dashboardDirectoryUsersById, setDashboardDirectoryUsersById] = useState({});
   const [users, setUsers] = useState([]);
   const [usersTotal, setUsersTotal] = useState(0);
   const [usersTotalPages, setUsersTotalPages] = useState(1);
@@ -514,7 +254,6 @@ export default function AdminDashboard({ onLogout }) {
   /** Client-only: narrow overview “Site-wise stats” table (list view). */
   const [overviewSiteStatsSearch, setOverviewSiteStatsSearch] = useState("");
   const [overviewSiteStatsQuickFilter, setOverviewSiteStatsQuickFilter] = useState("");
-  const [overviewSiteInChargeSavingId, setOverviewSiteInChargeSavingId] = useState(null);
   /** Client-only: narrow pending table rows on the current API page. */
   const [pendingListSearch, setPendingListSearch] = useState("");
   const [approvingId, setApprovingId] = useState(null);
@@ -557,8 +296,6 @@ export default function AdminDashboard({ onLogout }) {
   const [deleteSiteLoading, setDeleteSiteLoading] = useState(false);
 
   const refreshTimeoutRef = useRef(null);
-  /** siteId string -> inChargeUserId saved from overview table; merged on every `fetchDashboard` load. */
-  const overviewInChargePatchesRef = useRef({});
 
   /** Keep tab + workflow state aligned with `/admin/...` URL (shareable; works on Render with SPA fallback). */
   useEffect(() => {
@@ -695,8 +432,6 @@ export default function AdminDashboard({ onLogout }) {
     if (!authHeader) return;
     setDashboardLoading(true);
     setDashboardError("");
-    const sitesMapPromise = fetchSitesMapForDashboardInCharge();
-    const usersMapPromise = fetchUsersMapForDashboardInCharge();
     try {
       const url = `${BASE_URL}/api/admin/dashboard`;
       let res = await fetch(url, { headers: { Authorization: authHeader } });
@@ -709,35 +444,18 @@ export default function AdminDashboard({ onLogout }) {
       }
       const data = await res.json().catch(() => ({}));
       if (res.ok && data?.success) {
-        const basePayload = data.data || null;
-        const [sitesMap, usersMap] = await Promise.all([sitesMapPromise, usersMapPromise]);
-        const merged = applyOverviewInChargePatches(basePayload, sitesMap, overviewInChargePatchesRef.current);
-        const statsRows = Array.isArray(merged.dashboardData?.siteStats) ? merged.dashboardData.siteStats : [];
-        const sitesWithDetail = await enrichSitesByIdFromDetailWhenInChargeMissing(
-          merged.sitesById || {},
-          statsRows,
-          authHeader,
-        );
-        const withMergedInCharge = mergeSiteStatsInChargeFromSitesMap(merged.dashboardData, sitesWithDetail);
-        const enrichedSites = enrichSitesMapInChargeFromSiteStats(sitesWithDetail, withMergedInCharge?.siteStats);
-        setDashboardData(withMergedInCharge);
-        setDashboardSitesById(enrichedSites);
-        setDashboardDirectoryUsersById(usersMap);
+        setDashboardData(data.data || null);
       } else {
         const msg = data?.message || "Failed to load dashboard.";
         setDashboardError(msg);
         showError?.(msg);
-        setDashboardSitesById({});
-        setDashboardDirectoryUsersById({});
-        await Promise.all([sitesMapPromise.catch(() => {}), usersMapPromise.catch(() => {})]);
+        setDashboardData(null);
       }
     } catch {
       const msg = "Failed to load dashboard.";
       setDashboardError(msg);
       showError?.(msg);
-      setDashboardSitesById({});
-      setDashboardDirectoryUsersById({});
-      await Promise.all([sitesMapPromise.catch(() => {}), usersMapPromise.catch(() => {})]);
+      setDashboardData(null);
     }
     setDashboardLoading(false);
   }, [showError]);
@@ -957,51 +675,6 @@ export default function AdminDashboard({ onLogout }) {
     if (m) showToast?.(m);
     setTimeout(() => setSuccessMessage(""), 4000);
   }, [showToast]);
-
-  const handleOverviewSiteInChargeChange = useCallback(
-    async (siteIdRaw, stat, mergedSite, nextUserIdStr) => {
-      const authHeader = getAuthHeader();
-      if (!authHeader || siteIdRaw == null || siteIdRaw === "") return;
-      const id = Number(siteIdRaw);
-      if (!Number.isFinite(id)) return;
-      setOverviewSiteInChargeSavingId(String(siteIdRaw));
-      try {
-        const base = mergedSite && typeof mergedSite === "object" ? mergedSite : {};
-        const payload = {
-          name: String(base.name ?? stat?.siteName ?? "").trim() || "Site",
-          jobCode: String(base.jobCode ?? stat?.jobCode ?? "").trim(),
-          address: String(base.address ?? "").trim(),
-          isActive: base.isActive !== undefined && base.isActive !== null ? Boolean(base.isActive) : true,
-          ...siteInChargeRequestFields(nextUserIdStr),
-        };
-        const res = await fetch(`${BASE_URL}/api/admin/sites/${id}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json", Authorization: authHeader },
-          body: JSON.stringify(payload),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && data?.success) {
-          showSuccess(data.message || "In charge updated.");
-          const siteKey = siteDashboardRowId(stat) ?? String(id);
-          const patchedInChargeId = inChargePayloadValue(nextUserIdStr);
-          if (patchedInChargeId == null) {
-            delete overviewInChargePatchesRef.current[siteKey];
-          } else {
-            overviewInChargePatchesRef.current[siteKey] = patchedInChargeId;
-          }
-          await fetchDashboard();
-          if (view === "sites") fetchSites();
-        } else {
-          showError?.(data?.message || "Could not update in charge.");
-        }
-      } catch {
-        showError?.("Could not update in charge.");
-      } finally {
-        setOverviewSiteInChargeSavingId(null);
-      }
-    },
-    [showSuccess, showError, fetchDashboard, fetchSites, view],
-  );
 
   const closeSiteDetail = () => {
     setViewingSiteId(null);
@@ -1377,14 +1050,6 @@ export default function AdminDashboard({ onLogout }) {
     [dashboardData?.siteStats, overviewSiteStatsSearch, overviewSiteStatsQuickFilter],
   );
 
-  const dashboardInChargeUserOptions = useMemo(() => {
-    const map = dashboardDirectoryUsersById || {};
-    return Object.values(map)
-      .map((u) => normalizeDirectoryUserRowForPicker(u))
-      .filter(Boolean)
-      .sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? "")));
-  }, [dashboardDirectoryUsersById]);
-
   const filteredPendingListRows = useMemo(
     () => filterPendingListRowsLocal(pendingRequests, pendingListSearch),
     [pendingRequests, pendingListSearch],
@@ -1502,7 +1167,7 @@ export default function AdminDashboard({ onLogout }) {
                         id="overview-site-stats-search"
                         type="search"
                         className="form-control form-control-sm"
-                        placeholder="Site name, job code, in charge…"
+                        placeholder="Site name, job code…"
                         value={overviewSiteStatsSearch}
                         onChange={(e) => setOverviewSiteStatsSearch(e.target.value)}
                       />
@@ -1540,7 +1205,6 @@ export default function AdminDashboard({ onLogout }) {
                         <tr>
                           <th>Site</th>
                           <th>Job Code</th>
-                          <th>In charge</th>
                           <th>Today</th>
                           <th>Pending</th>
                           <th>Approved</th>
@@ -1550,7 +1214,7 @@ export default function AdminDashboard({ onLogout }) {
                       <tbody>
                         {filteredOverviewSiteStats.length === 0 ? (
                           <tr>
-                            <td colSpan={7} className="text-muted text-center small">
+                            <td colSpan={6} className="text-muted text-center small">
                               No rows match this search/filter.
                             </td>
                           </tr>
@@ -1582,15 +1246,6 @@ export default function AdminDashboard({ onLogout }) {
                               ) : (
                                 (s.jobCode ?? "—")
                               )}
-                            </td>
-                            <td>
-                              <SiteStatInChargeCell
-                                stat={s}
-                                sitesById={dashboardSitesById}
-                                userOptions={dashboardInChargeUserOptions}
-                                savingSiteId={overviewSiteInChargeSavingId}
-                                onInChargeChange={handleOverviewSiteInChargeChange}
-                              />
                             </td>
                             <td>{s.todayAttendanceCount ?? 0}</td>
                             <td>{s.pendingApprovals ?? 0}</td>
