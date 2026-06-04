@@ -178,8 +178,9 @@ function App() {
               <Header onLogout={handleLogout} sessionReady={!bootstrapping} />
               <main className={isLoggedIn ? "main-content" : "auth-page"}>
                 {bootstrapping ? (
-                  <div className="session-bootstrap" role="status" aria-live="polite">
-                    <p className="session-bootstrap-text">Restoring your session…</p>
+                  <div className="app-page-loader" role="status" aria-live="polite" aria-label="Restoring session">
+                    <div className="app-loader-spinner" aria-hidden="true" />
+                    <p className="app-page-loader__text">Restoring your session…</p>
                   </div>
                 ) : isLoggedIn ? (
                   role === "ADMIN" ? (

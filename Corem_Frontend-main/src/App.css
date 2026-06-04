@@ -4,20 +4,6 @@
   flex-direction: column;
 }
 
-.session-bootstrap {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 2rem;
-  color: var(--text-secondary);
-}
-
-.session-bootstrap-text {
-  margin: 0;
-  font-size: 0.95rem;
-}
-
 .site-container {
   width: min(1100px, calc(100% - 1.25rem));
   margin: 0 auto;

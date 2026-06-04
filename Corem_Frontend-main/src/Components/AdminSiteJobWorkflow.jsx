@@ -893,9 +893,12 @@ export default function AdminSiteJobWorkflow({
   const AUTOSAVE_LS_KEY = "corem.admin.siteJobWorkflow.autosave";
   const [autosaveEnabled, setAutosaveEnabled] = useState(() => {
     try {
-      return typeof localStorage !== "undefined" && localStorage.getItem(AUTOSAVE_LS_KEY) === "1";
+      if (typeof localStorage === "undefined") return true;
+      const v = localStorage.getItem(AUTOSAVE_LS_KEY);
+      if (v === "0") return false;
+      return true;
     } catch {
-      return false;
+      return true;
     }
   });
   /** Short status for optional autosave (non-blocking). */
@@ -969,6 +972,8 @@ export default function AdminSiteJobWorkflow({
 
   const wizardDataRef = useRef(wizardData);
   wizardDataRef.current = wizardData;
+  const currentStepIndexRef = useRef(currentStepIndex);
+  currentStepIndexRef.current = currentStepIndex;
 
   const machineryByCategory = useMemo(() => {
     const map = new Map();
@@ -1474,6 +1479,7 @@ export default function AdminSiteJobWorkflow({
         const portal = s.equipmentPortal;
         if (!portal) {
           if (advance) throw new Error("Equipment checklist not loaded yet.");
+          await persistWizard(wizardStep1ForPut, wizardDataRef.current, { applyServerResponse: !silent });
           return;
         }
         const putBody = buildEquipmentPortalPutBody(portal);
@@ -1599,6 +1605,26 @@ export default function AdminSiteJobWorkflow({
     [siteId, persistWizard],
   );
 
+  /** Persist the current step before switching tabs or going back, so edits are not lost. */
+  const goToWorkflowStep = useCallback(
+    async (targetIndex0) => {
+      if (targetIndex0 === currentStepIndexRef.current) return;
+      if (loading) return;
+      setSaving(true);
+      setError("");
+      try {
+        await executeStepSave({ advance: false, silent: true });
+        setCurrentStepIndex(targetIndex0);
+        onStepIndexChangeRef.current?.(targetIndex0);
+      } catch (e) {
+        reportWorkflowFailure(e?.message || "Could not save this step before switching away. Fix errors or use Save & next, then try again.");
+      } finally {
+        setSaving(false);
+      }
+    },
+    [loading, executeStepSave, reportWorkflowFailure],
+  );
+
   const handleSiteAttendanceApprove = useCallback(
     async (attendanceId) => {
       if (!attendanceId) return;
@@ -1700,10 +1726,21 @@ export default function AdminSiteJobWorkflow({
     executeStepSave,
   ]);
 
-  const handleBack = () => {
-    const n = Math.max(0, currentStepIndex - 1);
-    setCurrentStepIndex(n);
-    onStepIndexChange?.(n);
+  const handleBack = async () => {
+    const n = Math.max(0, currentStepIndexRef.current - 1);
+    if (n === currentStepIndexRef.current) return;
+    if (loading) return;
+    setSaving(true);
+    setError("");
+    try {
+      await executeStepSave({ advance: false, silent: true });
+      setCurrentStepIndex(n);
+      onStepIndexChangeRef.current?.(n);
+    } catch (e) {
+      reportWorkflowFailure(e?.message || "Could not save before going to the previous step.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const reloadAttendanceBlock = async (block) => {
@@ -2059,9 +2096,9 @@ export default function AdminSiteJobWorkflow({
                   i < currentStepIndex ? "site-job-workflow__primary-tab--done" : ""
                 }`}
                 title={`Step ${i + 1}: ${s.title}`}
+                disabled={saving || loading}
                 onClick={() => {
-                  setCurrentStepIndex(i);
-                  onStepIndexChange?.(i);
+                  void goToWorkflowStep(i);
                 }}
               >
                 <span className="site-job-workflow__primary-tab-num">{i + 1}</span>

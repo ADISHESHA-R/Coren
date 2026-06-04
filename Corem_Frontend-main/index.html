@@ -20,7 +20,12 @@
     <title>Attendance App</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="app-page-loader" role="status" aria-live="polite" aria-label="Loading application">
+        <div class="app-loader-spinner" aria-hidden="true"></div>
+        <p class="app-page-loader__text">Loading…</p>
+      </div>
+    </div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
