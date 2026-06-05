@@ -56,6 +56,11 @@ import AttendancePhotoThumb from "./AttendancePhotoThumb.jsx";
 const WIZARD_VERSION = 1;
 /** Attendance register API uses 15-day blocks (unchanged). */
 const DAYS_CHECKLIST = 15;
+
+/** `/api/admin/sites/{segment}/…` — server accepts numeric id, job code, or slug; always encode the segment. */
+function adminSitesApiBase(siteId) {
+  return `${BASE_URL}/api/admin/sites/${encodeURIComponent(String(siteId ?? "").trim())}`;
+}
 /** Attendance register cell codes (no ✓). */
 const REGISTER_ATT_CODES = ["", "P", "A", "S", "HQ", "LS", "INJ"];
 
@@ -1143,10 +1148,13 @@ export default function AdminSiteJobWorkflow({
           continue;
         }
         const { list } = parseAdminAttendancePage(data);
-        const sidNum = Number(siteId);
+        const fromProp = Number(siteId);
+        const fromSite = Number(site?.id ?? site?.siteId);
+        const sidNum = Number.isFinite(fromProp) ? fromProp : fromSite;
+        const useNumericSiteFilter = Number.isFinite(sidNum);
         for (const row of list) {
           const rowSite = row?.siteId ?? row?.site?.id;
-          if (rowSite != null && Number(rowSite) !== sidNum) continue;
+          if (useNumericSiteFilter && rowSite != null && Number(rowSite) !== sidNum) continue;
           const idKey = row?.id ?? row?.attendanceId;
           if (idKey == null || idKey === "") continue;
           merged.set(idKey, row);
@@ -1166,7 +1174,7 @@ export default function AdminSiteJobWorkflow({
       reportWorkflowFailureRef.current(e?.message || "Failed to load attendance submissions for this site.");
     }
     setSiteAttendanceLoading(false);
-  }, [siteId]);
+  }, [siteId, site]);
 
   useEffect(() => {
     if (currentStepIndex !== 8 || !siteId) return undefined;
@@ -1186,7 +1194,7 @@ export default function AdminSiteJobWorkflow({
       return;
     }
     try {
-      const siteRes = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}`);
+      const siteRes = await adminFetchJson(`${adminSitesApiBase(siteId)}`);
       if (!siteRes.res.ok || !siteRes.data?.success) {
         reportWorkflowFailureRef.current(siteRes.data?.message || "Failed to load site.");
         setLoading(false);
@@ -1195,7 +1203,7 @@ export default function AdminSiteJobWorkflow({
       const sitePayload = siteRes.data.data || {};
       setSite(sitePayload);
 
-      const wizRes = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/wizard`);
+      const wizRes = await adminFetchJson(`${adminSitesApiBase(siteId)}/wizard`);
       let parsed = { step: 1, data: { version: WIZARD_VERSION } };
       if (wizRes.res.ok && wizRes.data?.success && wizRes.data.data != null) {
         parsed = parseWizardPayload(wizRes.data.data);
@@ -1251,18 +1259,18 @@ export default function AdminSiteJobWorkflow({
       );
 
       const [adv, tech, issues, chall, beh, reg, fb, mach, epRes] = await Promise.all([
-        adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/advance-expense-lines`),
-        adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/technician-payments`),
-        adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/tool-issues`),
-        adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/challenge-lines`),
-        adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/behaviour-report`),
+        adminFetchJson(`${adminSitesApiBase(siteId)}/job-data/advance-expense-lines`),
+        adminFetchJson(`${adminSitesApiBase(siteId)}/job-data/technician-payments`),
+        adminFetchJson(`${adminSitesApiBase(siteId)}/job-data/tool-issues`),
+        adminFetchJson(`${adminSitesApiBase(siteId)}/job-data/challenge-lines`),
+        adminFetchJson(`${adminSitesApiBase(siteId)}/job-data/behaviour-report`),
         adminFetchJson(
-          `${BASE_URL}/api/admin/sites/${siteId}/attendance-register?blockIndex=0&daysPerBlock=${DAYS_CHECKLIST}`,
+          `${adminSitesApiBase(siteId)}/attendance-register?blockIndex=0&daysPerBlock=${DAYS_CHECKLIST}`,
         ),
-        adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/customer-feedback`),
-        adminFetchJson(`${BASE_URL}/api/admin/machinery?siteId=${siteId}`),
+        adminFetchJson(`${adminSitesApiBase(siteId)}/customer-feedback`),
+        adminFetchJson(`${BASE_URL}/api/admin/machinery?siteId=${encodeURIComponent(String(siteId ?? "").trim())}`),
         adminFetchJson(
-          `${BASE_URL}/api/admin/sites/${siteId}/job-data/equipment-portal?year=${epY}&month=${epM}`,
+          `${adminSitesApiBase(siteId)}/job-data/equipment-portal?year=${epY}&month=${epM}`,
         ),
       ]);
 
@@ -1352,10 +1360,10 @@ export default function AdminSiteJobWorkflow({
     if (!siteId) return;
     if (!getAuthHeader()) return;
     try {
-      const fb = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/customer-feedback`);
+      const fb = await adminFetchJson(`${adminSitesApiBase(siteId)}/customer-feedback`);
       if (fb.res.ok && fb.data?.success) setCustomerFeedback(fb.data.data);
       else setCustomerFeedback(null);
-      const siteRes = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}`);
+      const siteRes = await adminFetchJson(`${adminSitesApiBase(siteId)}`);
       if (siteRes.res.ok && siteRes.data?.success && siteRes.data.data) {
         setSite((prev) => ({ ...(prev && typeof prev === "object" ? prev : {}), ...siteRes.data.data }));
       }
@@ -1375,7 +1383,7 @@ export default function AdminSiteJobWorkflow({
     setEquipmentPortalLoadError("");
     const want = parseYearMonthFromIntroToolsChecklist(wizardDataRef.current?.projectIntroduction?.toolsChecklistMonth);
     const { res, data } = await adminFetchJson(
-      `${BASE_URL}/api/admin/sites/${siteId}/job-data/equipment-portal?year=${want.year}&month=${want.month}`,
+      `${adminSitesApiBase(siteId)}/job-data/equipment-portal?year=${want.year}&month=${want.month}`,
     );
     if (res.ok && data?.success && data.data != null) {
       let portal = normalizeEquipmentPortalPayload(data.data);
@@ -1404,7 +1412,7 @@ export default function AdminSiteJobWorkflow({
       }
       try {
         const body = buildEquipmentLayoutRequestBody(nextPortal);
-        const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/equipment-portal/layout`, {
+        const { res, data } = await adminFetchJson(`${adminSitesApiBase(siteId)}/job-data/equipment-portal/layout`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
@@ -1455,7 +1463,7 @@ export default function AdminSiteJobWorkflow({
     let cancelled = false;
     (async () => {
       const { res, data } = await adminFetchJson(
-        `${BASE_URL}/api/admin/sites/${siteId}/job-data/equipment-portal?year=${want.year}&month=${want.month}`,
+        `${adminSitesApiBase(siteId)}/job-data/equipment-portal?year=${want.year}&month=${want.month}`,
       );
       if (cancelled) return;
       setEquipmentPortalLoadError("");
@@ -1518,7 +1526,7 @@ export default function AdminSiteJobWorkflow({
       step: nextStep1Based,
       data: { ...snapshot },
     };
-    const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/wizard`, {
+    const { res, data } = await adminFetchJson(`${adminSitesApiBase(siteId)}/wizard`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -1552,7 +1560,7 @@ export default function AdminSiteJobWorkflow({
               }
             : wizardDataRef.current;
         const batchBody = buildWorkflowBatchRequestBody(ci, s, wizardStep1ForPut, wizardSnap);
-        const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/workflow-batch`, {
+        const { res, data } = await adminFetchJson(`${adminSitesApiBase(siteId)}/job-data/workflow-batch`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(batchBody),
@@ -1581,7 +1589,7 @@ export default function AdminSiteJobWorkflow({
             setAttendanceDirtyCells(new Map());
             if (advance || cellCount > 0) {
               const regRes = await adminFetchJson(
-                `${BASE_URL}/api/admin/sites/${siteId}/attendance-register?blockIndex=${s.attendanceBlock}&daysPerBlock=${DAYS_CHECKLIST}`,
+                `${adminSitesApiBase(siteId)}/attendance-register?blockIndex=${s.attendanceBlock}&daysPerBlock=${DAYS_CHECKLIST}`,
               );
               if (!regRes.res.ok || !regRes.data?.success) {
                 throw new Error(regRes.data?.message || "Could not reload attendance register after save.");
@@ -1608,7 +1616,7 @@ export default function AdminSiteJobWorkflow({
           return;
         }
         const putBody = buildEquipmentPortalPutBody(portal);
-        const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/equipment-portal`, {
+        const { res, data } = await adminFetchJson(`${adminSitesApiBase(siteId)}/job-data/equipment-portal`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(putBody),
@@ -1637,13 +1645,13 @@ export default function AdminSiteJobWorkflow({
         if (!Array.isArray(advPayload)) throw new Error("Advance lines invalid.");
         if (!Array.isArray(s.technicianPaymentLines)) throw new Error("Technician payments invalid.");
         const techPayload = normalizeTechnicianPaymentLines(mergeTechnicianPaymentLinesByPerson(s.technicianPaymentLines));
-        const { res: r1, data: d1 } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/advance-expense-lines`, {
+        const { res: r1, data: d1 } = await adminFetchJson(`${adminSitesApiBase(siteId)}/job-data/advance-expense-lines`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(advPayload),
         });
         if (!r1.ok || d1?.success === false) throw new Error(d1?.message || "Failed to save advance lines.");
-        const { res: r2, data: d2 } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/technician-payments`, {
+        const { res: r2, data: d2 } = await adminFetchJson(`${adminSitesApiBase(siteId)}/job-data/technician-payments`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(techPayload),
@@ -1661,7 +1669,7 @@ export default function AdminSiteJobWorkflow({
       } else if (ci === 5) {
         const issuesPayload = s.toolIssueLines;
         if (!Array.isArray(issuesPayload)) throw new Error("Tool issues invalid.");
-        const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/tool-issues`, {
+        const { res, data } = await adminFetchJson(`${adminSitesApiBase(siteId)}/job-data/tool-issues`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(issuesPayload),
@@ -1671,7 +1679,7 @@ export default function AdminSiteJobWorkflow({
       } else if (ci === 6) {
         const challPayload = s.challengeLineRows.map(stripChallengeLineForApi);
         if (!Array.isArray(challPayload)) throw new Error("Challenge lines invalid.");
-        const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/challenge-lines`, {
+        const { res, data } = await adminFetchJson(`${adminSitesApiBase(siteId)}/job-data/challenge-lines`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(challPayload),
@@ -1680,7 +1688,7 @@ export default function AdminSiteJobWorkflow({
         await persistWizard(wizardStep1ForPut, wizardDataRef.current, { applyServerResponse: !silent });
       } else if (ci === 7) {
         const parsedBr = serializeBehaviourReport(s.behaviourState);
-        const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/behaviour-report`, {
+        const { res, data } = await adminFetchJson(`${adminSitesApiBase(siteId)}/job-data/behaviour-report`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(parsedBr),
@@ -1698,7 +1706,7 @@ export default function AdminSiteJobWorkflow({
           });
         }
         if (cells.length > 0) {
-          const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/attendance-register-cells`, {
+          const { res, data } = await adminFetchJson(`${adminSitesApiBase(siteId)}/job-data/attendance-register-cells`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ cells }),
@@ -1709,7 +1717,7 @@ export default function AdminSiteJobWorkflow({
         await persistWizard(wizardStep1ForPut, wizardDataRef.current, { applyServerResponse: !silent });
         if (advance || cells.length > 0) {
           const regRes = await adminFetchJson(
-            `${BASE_URL}/api/admin/sites/${siteId}/attendance-register?blockIndex=${s.attendanceBlock}&daysPerBlock=${DAYS_CHECKLIST}`,
+            `${adminSitesApiBase(siteId)}/attendance-register?blockIndex=${s.attendanceBlock}&daysPerBlock=${DAYS_CHECKLIST}`,
           );
           if (!regRes.res.ok || !regRes.data?.success) {
             throw new Error(regRes.data?.message || "Could not reload attendance register after save.");
@@ -1899,7 +1907,7 @@ export default function AdminSiteJobWorkflow({
   const reloadAttendanceBlock = async (block) => {
     try {
       const { res, data } = await adminFetchJson(
-        `${BASE_URL}/api/admin/sites/${siteId}/attendance-register?blockIndex=${block}&daysPerBlock=${DAYS_CHECKLIST}`,
+        `${adminSitesApiBase(siteId)}/attendance-register?blockIndex=${block}&daysPerBlock=${DAYS_CHECKLIST}`,
       );
       if (res.ok && data?.success) {
         setAttendanceRegister(data.data);

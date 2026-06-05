@@ -310,10 +310,12 @@ export default function AdminDashboard({ onLogout }) {
       const id = resolveSiteIdFromWorkflowSegment(siteKey, sites, dashboardData?.siteStats);
       if (id != null) {
         setWorkflowSiteId(id);
-        setView("siteWorkflow");
-        return;
+      } else if (siteKey) {
+        /** Backend accepts slug/job code in `/api/admin/sites/{siteId}/…`; use URL segment when list lookup misses (e.g. paging). */
+        setWorkflowSiteId(siteKey);
+      } else {
+        setWorkflowSiteId(null);
       }
-      setWorkflowSiteId(null);
       setView("siteWorkflow");
       return;
     }
