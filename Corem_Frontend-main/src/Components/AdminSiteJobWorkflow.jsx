@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useLayoutEffect, Fragment, useId, useMemo, useRef, useState } from "react";
-import { flushSync } from "react-dom";
 import { refreshAccessToken } from "../utils/refreshAccessToken";
 import { API_BASE_URL as BASE_URL } from "../config/apiBaseUrl.js";
 import {
@@ -496,6 +495,67 @@ function buildEquipmentPortalPutBody(portal) {
   if (includeMonth) {
     body.availabilityYear = y;
     body.availabilityMonth = mo;
+  }
+  return body;
+}
+
+/**
+ * Build JSON body for `PUT|POST /api/admin/sites/{id}/job-data/workflow-batch`.
+ * Keys omitted when not applicable; must stay aligned with `executeStepSave` payloads.
+ * @see ../docs/SITE_JOB_WORKFLOW_API.md
+ */
+function buildWorkflowBatchRequestBody(ci, saveCtx, wizardStep1ForPut, wizardDataSnapshot) {
+  const body = {
+    wizard: {
+      step: wizardStep1ForPut,
+      data: { ...wizardDataSnapshot },
+    },
+  };
+  if (ci <= 1) return body;
+  if (ci === 2) {
+    if (saveCtx.equipmentPortal) {
+      body.equipmentPortal = buildEquipmentPortalPutBody(saveCtx.equipmentPortal);
+    }
+    return body;
+  }
+  if (ci === 3) {
+    if (!Array.isArray(saveCtx.advanceLines) || !Array.isArray(saveCtx.technicianPaymentLines)) {
+      throw new Error("Advance or technician payments invalid.");
+    }
+    body.advanceExpenseLines = saveCtx.advanceLines;
+    body.technicianPayments = normalizeTechnicianPaymentLines(
+      mergeTechnicianPaymentLinesByPerson(saveCtx.technicianPaymentLines),
+    );
+    return body;
+  }
+  if (ci === 4) return body;
+  if (ci === 5) {
+    if (!Array.isArray(saveCtx.toolIssueLines)) throw new Error("Tool issues invalid.");
+    body.toolIssues = saveCtx.toolIssueLines;
+    return body;
+  }
+  if (ci === 6) {
+    body.challengeLines = saveCtx.challengeLineRows.map(stripChallengeLineForApi);
+    return body;
+  }
+  if (ci === 7) {
+    body.behaviourReport = serializeBehaviourReport(saveCtx.behaviourState);
+    return body;
+  }
+  if (ci === 8) {
+    const cells = [];
+    const dirty = saveCtx.attendanceDirtyCells;
+    if (dirty && typeof dirty.forEach === "function") {
+      dirty.forEach((code, key) => {
+        const [employeeUserId, date] = String(key).split("|");
+        if (!employeeUserId || !date || !code) return;
+        cells.push({ employeeUserId: Number(employeeUserId), date, code });
+      });
+    }
+    if (cells.length > 0) {
+      body.attendanceRegisterCells = { cells };
+    }
+    return body;
   }
   return body;
 }
@@ -1474,6 +1534,62 @@ export default function AdminSiteJobWorkflow({
       const nextIdx = advance ? Math.min(ci + 1, STEPS.length - 1) : ci;
       const wizardStep1ForPut = advance ? nextIdx + 1 : wizardPersistedStep1Ref.current;
 
+      /** One-call save for autosave / tab switch; falls back to per-endpoint PUTs if batch route is absent (404/405). */
+      if (silent) {
+        const wizardSnap =
+          ci === 4
+            ? {
+                ...wizardDataRef.current,
+                teamMovementRegister: normalizeTeamMovementRegister(wizardDataRef.current.teamMovementRegister, s.site),
+              }
+            : wizardDataRef.current;
+        const batchBody = buildWorkflowBatchRequestBody(ci, s, wizardStep1ForPut, wizardSnap);
+        const { res, data } = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}/job-data/workflow-batch`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(batchBody),
+        });
+        const batchMissing = res.status === 404 || res.status === 405;
+        if (!batchMissing) {
+          if (!res.ok || data?.success === false) {
+            throw new Error(data?.message || "Failed to save workflow batch.");
+          }
+          if (ci === 3) {
+            const techPayload = normalizeTechnicianPaymentLines(mergeTechnicianPaymentLinesByPerson(s.technicianPaymentLines || []));
+            setTechnicianPaymentLines(techPayload);
+          }
+          if (ci === 4) {
+            setWizardData(wizardSnap);
+          }
+          if (ci === 8) {
+            let cellCount = 0;
+            const dirty = s.attendanceDirtyCells;
+            if (dirty && typeof dirty.forEach === "function") {
+              dirty.forEach((code, key) => {
+                const [employeeUserId, date] = String(key).split("|");
+                if (employeeUserId && date && code) cellCount += 1;
+              });
+            }
+            setAttendanceDirtyCells(new Map());
+            if (advance || cellCount > 0) {
+              const regRes = await adminFetchJson(
+                `${BASE_URL}/api/admin/sites/${siteId}/attendance-register?blockIndex=${s.attendanceBlock}&daysPerBlock=${DAYS_CHECKLIST}`,
+              );
+              if (!regRes.res.ok || !regRes.data?.success) {
+                throw new Error(regRes.data?.message || "Could not reload attendance register after save.");
+              }
+              setAttendanceRegister(regRes.data.data);
+            }
+          }
+          if (advance) {
+            wizardPersistedStep1Ref.current = wizardStep1ForPut;
+            setCurrentStepIndex(nextIdx);
+            onStepIndexChangeRef.current?.(nextIdx);
+          }
+          return;
+        }
+      }
+
       if (ci <= 1) {
         await persistWizard(wizardStep1ForPut, wizardDataRef.current, { applyServerResponse: !silent });
       } else if (ci === 2) {
@@ -1611,10 +1727,8 @@ export default function AdminSiteJobWorkflow({
     async (targetIndex0) => {
       if (targetIndex0 === currentStepIndexRef.current) return;
       if (loading) return;
-      flushSync(() => {
-        setSaving(true);
-        setError("");
-      });
+      setSaving(true);
+      setError("");
       try {
         await executeStepSave({ advance: false, silent: true });
         setCurrentStepIndex(targetIndex0);
@@ -1622,7 +1736,7 @@ export default function AdminSiteJobWorkflow({
       } catch (e) {
         reportWorkflowFailure(e?.message || "Could not save this step before switching away. Fix errors or use Save & next, then try again.");
       } finally {
-        flushSync(() => setSaving(false));
+        setSaving(false);
       }
     },
     [loading, executeStepSave, reportWorkflowFailure],
@@ -1677,16 +1791,14 @@ export default function AdminSiteJobWorkflow({
   }, [siteAttRejectId, siteAttRejectReason, refreshSiteAttendanceList, showSuccess, reportWorkflowFailure]);
 
   const handleNext = async () => {
-    flushSync(() => {
-      setSaving(true);
-      setError("");
-    });
+    setSaving(true);
+    setError("");
     try {
       await executeStepSave({ advance: true, silent: false });
     } catch (e) {
       reportWorkflowFailure(e?.message || "Save failed. Nothing was saved for this step.");
     } finally {
-      flushSync(() => setSaving(false));
+      setSaving(false);
     }
   };
 
@@ -1763,10 +1875,8 @@ export default function AdminSiteJobWorkflow({
     const n = Math.max(0, currentStepIndexRef.current - 1);
     if (n === currentStepIndexRef.current) return;
     if (loading) return;
-    flushSync(() => {
-      setSaving(true);
-      setError("");
-    });
+    setSaving(true);
+    setError("");
     try {
       await executeStepSave({ advance: false, silent: true });
       setCurrentStepIndex(n);
@@ -1774,7 +1884,7 @@ export default function AdminSiteJobWorkflow({
     } catch (e) {
       reportWorkflowFailure(e?.message || "Could not save before going to the previous step.");
     } finally {
-      flushSync(() => setSaving(false));
+      setSaving(false);
     }
   };
 
