@@ -540,17 +540,47 @@ const CUSTOMER_FEEDBACK_SNAKE_TO_CAMEL = {
 };
 
 function tryParseFeedbackJsonBlob(raw) {
-  if (raw == null) return {};
-  if (typeof raw === "string" && raw.trim()) {
-    try {
-      const o = JSON.parse(raw);
-      return o && typeof o === "object" && !Array.isArray(o) ? o : {};
-    } catch {
-      return {};
+  let v = raw;
+  if (v == null) return {};
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (typeof v === "string") {
+      const s = v.trim();
+      if (!s) return {};
+      try {
+        v = JSON.parse(s);
+      } catch {
+        return {};
+      }
+      continue;
     }
+    if (typeof v === "object" && v !== null && !Array.isArray(v)) {
+      return { ...v };
+    }
+    return {};
   }
-  if (typeof raw === "object" && !Array.isArray(raw)) return { ...raw };
   return {};
+}
+
+/** Merge parsed objects from any string/blob field the API might use for stored answers. */
+function mergeJsonFromKnownStringFields(fb) {
+  if (!fb || typeof fb !== "object") return {};
+  const keys = [
+    "value",
+    "content",
+    "body",
+    "payload",
+    "json",
+    "customerFeedbackJson",
+    "feedback_json",
+    "feedbackJson",
+  ];
+  let acc = {};
+  for (const k of keys) {
+    if (!Object.prototype.hasOwnProperty.call(fb, k)) continue;
+    const chunk = tryParseFeedbackJsonBlob(fb[k]);
+    acc = { ...acc, ...chunk };
+  }
+  return acc;
 }
 
 function pickCustomerFeedbackInner(obj) {
@@ -580,7 +610,7 @@ function expandSnakeCaseFeedbackFields(obj) {
  * snake_case aliases, nested blobs, then **`feedbackJson`** (wins on conflict — matches stored raw string).
  */
 function mergeCustomerFeedbackInnerFields(fb) {
-  const fromJson = tryParseFeedbackJsonBlob(fb.feedbackJson ?? fb.feedback_json);
+  const fromJson = mergeJsonFromKnownStringFields(fb);
   const nestedSources = [
     fb.feedback,
     fb.feedbackPayload,
@@ -603,7 +633,15 @@ function unwrapNestedDataDto(d) {
   while (cur != null && typeof cur === "object" && !Array.isArray(cur) && guard++ < 6) {
     const keys = Object.keys(cur);
     if (keys.length === 1 && keys[0] === "data") {
-      const inner = cur.data;
+      let inner = cur.data;
+      if (inner == null) break;
+      if (typeof inner === "string" && inner.trim()) {
+        try {
+          inner = JSON.parse(inner);
+        } catch {
+          break;
+        }
+      }
       if (inner != null && typeof inner === "object" && !Array.isArray(inner)) {
         cur = inner;
         continue;
@@ -640,7 +678,18 @@ export function extractCustomerFeedbackDtoFromAdminResponse(body) {
       }
     }
     if (typeof d !== "object" || Array.isArray(d)) return null;
-    return unwrapNestedDataDto(d);
+    let unwrapped = unwrapNestedDataDto(d);
+    for (let i = 0; i < 4 && typeof unwrapped === "string" && unwrapped.trim(); i += 1) {
+      try {
+        const p = JSON.parse(unwrapped);
+        if (p && typeof p === "object" && !Array.isArray(p)) unwrapped = p;
+        else break;
+      } catch {
+        break;
+      }
+    }
+    if (typeof unwrapped !== "object" || unwrapped == null || Array.isArray(unwrapped)) return null;
+    return unwrapped;
   }
   const { success: _s, Success: _S, message: _m, error: _e, code: _c, ...rest } = body;
   if (!rest || typeof rest !== "object" || Object.keys(rest).length === 0) return null;
@@ -656,7 +705,12 @@ function strField(v) {
 export function parseCustomerFeedbackRecord(fb) {
   if (!fb || typeof fb !== "object") return null;
   const merged = mergeCustomerFeedbackInnerFields(fb);
-  const rawSource = fb.feedbackJson ?? fb.feedback_json;
+  const rawSource =
+    fb.feedbackJson ??
+    fb.feedback_json ??
+    fb.customerFeedbackJson ??
+    (typeof fb.json === "string" ? fb.json : null) ??
+    (typeof fb.payload === "string" ? fb.payload : null);
   const rawJson =
     typeof rawSource === "string" && rawSource.trim()
       ? rawSource
