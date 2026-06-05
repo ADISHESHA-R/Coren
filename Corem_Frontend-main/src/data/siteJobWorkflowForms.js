@@ -581,13 +581,43 @@ function expandSnakeCaseFeedbackFields(obj) {
  */
 function mergeCustomerFeedbackInnerFields(fb) {
   const fromJson = tryParseFeedbackJsonBlob(fb.feedbackJson ?? fb.feedback_json);
-  const nestedSources = [fb.feedback, fb.feedbackPayload, fb.feedbackData, fb.customerFeedbackPayload].filter(
-    (x) => x && typeof x === "object" && !Array.isArray(x),
-  );
+  const nestedSources = [
+    fb.feedback,
+    fb.feedbackPayload,
+    fb.feedbackData,
+    fb.customerFeedbackPayload,
+    fb.answers,
+    fb.form,
+    fb.response,
+  ].filter((x) => x && typeof x === "object" && !Array.isArray(x));
   const fromNested = Object.assign({}, ...nestedSources.map((o) => pickCustomerFeedbackInner(o)));
   const fromRoot = pickCustomerFeedbackInner(fb);
   const fromSnake = expandSnakeCaseFeedbackFields(fb);
   return { ...fromRoot, ...fromSnake, ...fromNested, ...fromJson };
+}
+
+/** Unwrap `{ data: { … } }` chains some gateways add on top of the DTO. */
+function unwrapNestedDataDto(d) {
+  let cur = d;
+  let guard = 0;
+  while (cur != null && typeof cur === "object" && !Array.isArray(cur) && guard++ < 6) {
+    const keys = Object.keys(cur);
+    if (keys.length === 1 && keys[0] === "data") {
+      const inner = cur.data;
+      if (inner != null && typeof inner === "object" && !Array.isArray(inner)) {
+        cur = inner;
+        continue;
+      }
+    }
+    break;
+  }
+  return cur;
+}
+
+export function adminResponseSuccess(body) {
+  if (!body || typeof body !== "object") return false;
+  const v = body.success ?? body.Success;
+  return v === true || v === "true";
 }
 
 /**
@@ -596,13 +626,23 @@ function mergeCustomerFeedbackInnerFields(fb) {
  * Also accepts a flat `{ success, name, … }` body for older stacks.
  */
 export function extractCustomerFeedbackDtoFromAdminResponse(body) {
-  if (!body || typeof body !== "object" || body.success !== true) return null;
+  if (!body || typeof body !== "object" || !adminResponseSuccess(body)) return null;
   if ("data" in body) {
-    const d = body.data;
-    if (d != null && typeof d === "object" && !Array.isArray(d)) return d;
-    return null;
+    let d = body.data;
+    if (d == null) return null;
+    if (typeof d === "string" && d.trim()) {
+      try {
+        const parsed = JSON.parse(d);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) d = parsed;
+        else return null;
+      } catch {
+        return null;
+      }
+    }
+    if (typeof d !== "object" || Array.isArray(d)) return null;
+    return unwrapNestedDataDto(d);
   }
-  const { success: _s, message: _m, error: _e, code: _c, ...rest } = body;
+  const { success: _s, Success: _S, message: _m, error: _e, code: _c, ...rest } = body;
   if (!rest || typeof rest !== "object" || Object.keys(rest).length === 0) return null;
   return rest;
 }
