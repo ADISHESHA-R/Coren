@@ -66,6 +66,55 @@ export function getCustomerFeedbackInviteTokenFromAdminDto(data) {
   return "";
 }
 
+/**
+ * Merge **GET …/customer-feedback** with **GET …/sites/{id}** so the completion step shows stored answers
+ * when the backend mirrors `customer_feedback_payload` as **`customerFeedbackJson`** on the site row
+ * (e.g. after wizard-only saves merged on the server), or when the dedicated GET omits `feedbackJson`.
+ * The endpoint DTO wins on overlapping top-level fields; site blob fills empty `feedbackJson`.
+ */
+export function mergeSiteAndEndpointCustomerFeedbackForAdmin(site, customerFeedbackDto) {
+  const siteObj = site && typeof site === "object" ? site : {};
+  const out = customerFeedbackDto && typeof customerFeedbackDto === "object" ? { ...customerFeedbackDto } : {};
+
+  const siteBlob =
+    siteObj.customerFeedbackJson ??
+    siteObj.customer_feedback_json ??
+    siteObj.customerFeedbackPayload ??
+    siteObj.customer_feedback_payload;
+  let siteBlobStr = "";
+  if (typeof siteBlob === "string") {
+    siteBlobStr = String(siteBlob).trim();
+  } else if (siteBlob != null && typeof siteBlob === "object") {
+    siteBlobStr = JSON.stringify(siteBlob);
+  }
+
+  const existingJson = String(out.feedbackJson ?? out.feedback_json ?? "").trim();
+  if (siteBlobStr && !existingJson) {
+    out.feedbackJson = siteBlobStr;
+  }
+
+  if (out.certificateClientStatus == null && siteObj.certificateClientStatus != null) {
+    out.certificateClientStatus = siteObj.certificateClientStatus;
+  }
+  if (out.customerFeedbackApprovedAt == null && siteObj.customerFeedbackApprovedAt != null) {
+    out.customerFeedbackApprovedAt = siteObj.customerFeedbackApprovedAt;
+  }
+  if (out.jobCode == null && siteObj.jobCode != null) {
+    out.jobCode = siteObj.jobCode;
+  }
+  if (out.siteId == null && (siteObj.id != null || siteObj.siteId != null)) {
+    out.siteId = siteObj.id ?? siteObj.siteId;
+  }
+
+  const hasPayload =
+    Object.keys(out).length > 0 ||
+    siteBlobStr ||
+    siteObj.certificateClientStatus != null ||
+    siteObj.customerFeedbackApprovedAt != null;
+  if (!hasPayload) return null;
+  return out;
+}
+
 /** Score fields stored inside `feedbackJson` on the server (see parseCustomerFeedbackRecord). */
 const CUSTOMER_FEEDBACK_RATING_KEYS = [
   "productQuality",

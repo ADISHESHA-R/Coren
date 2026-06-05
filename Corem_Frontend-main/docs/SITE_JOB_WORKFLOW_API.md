@@ -123,7 +123,9 @@ If you send both `wizard` and `challengeLines`, **challengeLines wins** for norm
 | Customer feedback (admin) | `GET …/customer-feedback` | — |
 | Customer feedback invite | — | `POST …/feedback-invites` |
 
-**Admin customer feedback DTO (ProjectC / current dev):** `GET …/customer-feedback` returns `{ success, data }` where **`data`** is **`SiteCustomerFeedbackAdminDto`**: answers appear as **top-level camelCase** fields (`name`, `email`, `phone`, `companyName`, `productQuality`, …, `additionalComments`) matching the public POST, plus unchanged **`feedbackJson`** (raw string) when present. The SPA binds read-only fields from **`data.*`**; `parseCustomerFeedbackRecord` still merges **`feedbackJson`** and snake_case / nested shapes for older or odd responses.
+**Challenge lines GET / batch:** The SPA accepts `data` as a bare array, `{ challengeLines }`, Spring `Page.content`, stringified JSON, or nested `data`; rows match heads via `headIndex` / `index` / `challengeHeadIndex` / `challengeHeadId` (and snake_case aliases). After a successful **workflow-batch** autosave on the challenges step, it **refetches** `GET …/challenge-lines` so the grid matches the server.
+
+**Admin customer feedback DTO (ProjectC / current dev):** `GET …/customer-feedback` returns `{ success, data }` where **`data`** is **`SiteCustomerFeedbackAdminDto`**: answers appear as **top-level camelCase** fields (`name`, `email`, `phone`, `companyName`, `productQuality`, …, `additionalComments`) matching the public POST, plus unchanged **`feedbackJson`** (raw string) when present. The SPA binds read-only fields from **`data.*`**; `parseCustomerFeedbackRecord` still merges **`feedbackJson`** and snake_case / nested shapes for older or odd responses. **`GET …/sites/{id}`** may also expose **`customerFeedbackJson`** (same stored blob); the completion step **merges** site + dedicated GET so wizard-only persistence still displays.
 
 Meta: **`GET /api/meta/challenge-line-heads`** for challenge head presets.
 

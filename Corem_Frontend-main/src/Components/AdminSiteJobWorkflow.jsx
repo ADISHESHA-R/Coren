@@ -6,6 +6,7 @@ import {
   getCustomerFeedbackInviteTokenFromAdminDto,
   getSiteCustomerFeedbackInviteToken,
   isPublicCustomerFeedbackTokenRequired,
+  mergeSiteAndEndpointCustomerFeedbackForAdmin,
 } from "../config/customerFeedbackPublic.js";
 import { siteWorkflowPathSegment } from "../utils/adminSiteRoutes.js";
 import {
@@ -34,6 +35,7 @@ import {
   emptyAdvanceExpenseRow,
   emptyBehaviourState,
   emptyChallengeLineRow,
+  extractChallengeLinesArrayFromResponse,
   emptyTechnicianPaymentRow,
   emptyToolIssueRow,
   emptyTeamMovementRow,
@@ -1003,6 +1005,8 @@ export default function AdminSiteJobWorkflow({
   /** Visual: which equipment row is being dragged (categoryIndex-itemIndex). */
   const [equipmentDragKey, setEquipmentDragKey] = useState(null);
   const [challengeLineRows, setChallengeLineRows] = useState(() => buildChallengeLineWorkflowState([], CHALLENGE_HEADS_FALLBACK));
+  /** Last challenge head catalog from load (meta API or fallback); used when refetching rows after batch save. */
+  const challengeHeadsSnapshotRef = useRef(CHALLENGE_HEADS_FALLBACK);
   const [attendanceAdHocPickId, setAttendanceAdHocPickId] = useState("");
   const [siteAttendanceRecords, setSiteAttendanceRecords] = useState([]);
   const [siteAttendanceLoading, setSiteAttendanceLoading] = useState(false);
@@ -1254,6 +1258,7 @@ export default function AdminSiteJobWorkflow({
         headsRes.res.ok && headsRes.data?.success && Array.isArray(headsRes.data.data) && headsRes.data.data.length > 0
           ? headsRes.data.data
           : CHALLENGE_HEADS_FALLBACK;
+      challengeHeadsSnapshotRef.current = headsFromApi;
 
       const { year: epY, month: epM } = parseYearMonthFromIntroToolsChecklist(merged.projectIntroduction?.toolsChecklistMonth);
       lastEquipmentPortalFetchRef.current = { year: null, month: null };
@@ -1283,7 +1288,12 @@ export default function AdminSiteJobWorkflow({
       const advArr = Array.isArray(adv.data?.data) ? adv.data.data : [];
       const techArr = Array.isArray(tech.data?.data) ? tech.data.data : [];
       const issArr = Array.isArray(issues.data?.data) ? issues.data.data : [];
-      const chArr = Array.isArray(chall.data?.data) ? chall.data.data : [];
+      const chArr =
+        chall.res.ok && chall.data && adminResponseSuccess(chall.data)
+          ? extractChallengeLinesArrayFromResponse(
+              Object.prototype.hasOwnProperty.call(chall.data, "data") ? chall.data.data : chall.data,
+            )
+          : [];
       setAdvanceLines(normalizeAdvanceLines(advArr));
       setTechnicianPaymentLines(
         normalizeTechnicianPaymentLines(mergeTechnicianPaymentLinesByPerson(techArr)),
@@ -1583,6 +1593,18 @@ export default function AdminSiteJobWorkflow({
           }
           if (ci === 4) {
             setWizardData(wizardSnap);
+          }
+          if (ci === 6) {
+            try {
+              const r = await adminFetchJson(`${adminSitesApiBase(siteId)}/job-data/challenge-lines`);
+              if (r.res.ok && r.data && adminResponseSuccess(r.data)) {
+                const inner = Object.prototype.hasOwnProperty.call(r.data, "data") ? r.data.data : r.data;
+                const chArr = extractChallengeLinesArrayFromResponse(inner);
+                setChallengeLineRows(buildChallengeLineWorkflowState(chArr, challengeHeadsSnapshotRef.current));
+              }
+            } catch {
+              /* keep in-memory rows if refetch fails */
+            }
           }
           if (ci === 8) {
             let cellCount = 0;
@@ -1936,10 +1958,10 @@ export default function AdminSiteJobWorkflow({
     setWizardData((prev) => ({ ...prev, ...patch }));
   };
 
-  const customerFeedbackParsed = useMemo(
-    () => (customerFeedback ? parseCustomerFeedbackRecord(customerFeedback) : null),
-    [customerFeedback],
-  );
+  const customerFeedbackParsed = useMemo(() => {
+    const merged = mergeSiteAndEndpointCustomerFeedbackForAdmin(site, customerFeedback);
+    return merged ? parseCustomerFeedbackRecord(merged) : null;
+  }, [site, customerFeedback]);
 
   const teamMovementRegister = useMemo(
     () => normalizeTeamMovementRegister(wizardData.teamMovementRegister, site),

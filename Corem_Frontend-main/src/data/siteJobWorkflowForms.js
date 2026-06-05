@@ -221,6 +221,28 @@ export function emptyChallengeLineRow(headIndex, headLabel) {
   };
 }
 
+/** Map snake_case / alternate API keys onto the camelCase row shape the UI expects. */
+export function normalizeChallengeRowFromApi(row) {
+  if (!row || typeof row !== "object") return row;
+  const iid = row.involvedEmployeeUserId ?? row.involved_user_id ?? row.involvedUserId ?? row.involvedEmployeeId;
+  let involvedEmployeeUserId = null;
+  if (iid != null && iid !== "") {
+    const n = Number(iid);
+    if (Number.isFinite(n)) involvedEmployeeUserId = n;
+  } else if (row.involvedEmployeeUserId != null && row.involvedEmployeeUserId !== "") {
+    const n = Number(row.involvedEmployeeUserId);
+    if (Number.isFinite(n)) involvedEmployeeUserId = n;
+  }
+  return {
+    ...row,
+    dateOfIncident: String(row.dateOfIncident ?? row.date_of_incident ?? row.incidentDate ?? "").trim(),
+    involved: String(row.involved ?? "").trim(),
+    involvedEmployeeUserId,
+    challengesFaced: String(row.challengesFaced ?? row.challenges_faced ?? "").trim(),
+    resolutionStatus: String(row.resolutionStatus ?? row.resolution_status ?? row.action ?? "").trim(),
+  };
+}
+
 export function normalizeAdvanceLines(arr) {
   const a = Array.isArray(arr) ? arr : [];
   const rowCount = Math.min(
@@ -353,13 +375,66 @@ export function resolveChallengeHeads(apiHeads) {
   return CHALLENGE_HEADS_FALLBACK;
 }
 
+/**
+ * Normalise **GET …/job-data/challenge-lines** (and similar) payloads: bare array,
+ * `{ challengeLines }`, Spring `Page.content`, nested `data`, or stringified JSON.
+ */
+export function extractChallengeLinesArrayFromResponse(root) {
+  const visited = new WeakSet();
+  function drain(node, depth) {
+    if (node == null || depth > 10) return null;
+    if (typeof node === "string") {
+      const t = node.trim();
+      if (!t) return null;
+      try {
+        return drain(JSON.parse(t), depth + 1);
+      } catch {
+        return null;
+      }
+    }
+    if (Array.isArray(node)) return node;
+    if (typeof node !== "object") return null;
+    if (visited.has(node)) return null;
+    visited.add(node);
+
+    const preferredKeys = ["challengeLines", "lines", "rows", "items", "records", "content", "challengeLineList"];
+    for (const k of preferredKeys) {
+      if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+      const inner = drain(node[k], depth + 1);
+      if (Array.isArray(inner) && inner.length > 0) return inner;
+    }
+    const keys = Object.keys(node);
+    if (keys.length === 1) {
+      const inner = drain(node[keys[0]], depth + 1);
+      if (Array.isArray(inner) && inner.length > 0) return inner;
+    }
+    if (Object.prototype.hasOwnProperty.call(node, "data")) {
+      const inner = drain(node.data, depth + 1);
+      if (Array.isArray(inner) && inner.length > 0) return inner;
+    }
+    return null;
+  }
+  const arr = drain(root, 0);
+  return Array.isArray(arr) ? arr : [];
+}
+
 export function normalizeChallengeLines(savedArr, heads) {
   const list = resolveChallengeHeads(heads);
   const byIndex = new Map();
   if (Array.isArray(savedArr)) {
     for (const row of savedArr) {
-      const idx = row.headIndex ?? row.index ?? row.challengeHeadIndex;
-      if (idx != null) byIndex.set(Number(idx), row);
+      if (!row || typeof row !== "object") continue;
+      const idxRaw =
+        row.headIndex ??
+        row.index ??
+        row.challengeHeadIndex ??
+        row.challengeHeadId ??
+        row.headId ??
+        row.challenge_head_index ??
+        row.challenge_head_id;
+      const idx = Number(idxRaw);
+      if (!Number.isFinite(idx)) continue;
+      byIndex.set(idx, normalizeChallengeRowFromApi(row));
     }
   }
   return list.map((h) => {
@@ -386,7 +461,10 @@ export function buildChallengeLineWorkflowState(savedArr, heads) {
   const extras = [];
   if (Array.isArray(savedArr)) {
     for (const row of savedArr) {
-      const idx = Number(row.headIndex ?? row.index ?? row.challengeHeadIndex);
+      if (!row || typeof row !== "object") continue;
+      const idx = Number(
+        row.headIndex ?? row.index ?? row.challengeHeadIndex ?? row.challengeHeadId ?? row.headId ?? row.challenge_head_index,
+      );
       if (!Number.isFinite(idx)) continue;
       if (catalogIdx.has(idx)) continue;
       if (used.has(idx)) continue;
@@ -394,7 +472,7 @@ export function buildChallengeLineWorkflowState(savedArr, heads) {
       const label = String(row.headLabel ?? row.label ?? "Additional").trim() || "Additional";
       extras.push({
         ...emptyChallengeLineRow(idx, label),
-        ...row,
+        ...normalizeChallengeRowFromApi(row),
         headIndex: idx,
         headLabel: label,
         workflowSupplemental: true,
