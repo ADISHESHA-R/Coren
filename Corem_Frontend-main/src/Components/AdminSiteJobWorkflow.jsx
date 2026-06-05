@@ -6,6 +6,7 @@ import {
   getCustomerFeedbackInviteTokenFromAdminDto,
   getSiteCustomerFeedbackInviteToken,
 } from "../config/customerFeedbackPublic.js";
+import { siteWorkflowPathSegment } from "../utils/adminSiteRoutes.js";
 import {
   CHECKLIST_CATEGORY_OPTIONS,
   CHECKLIST_KEY_TO_LABEL,
@@ -1096,8 +1097,10 @@ export default function AdminSiteJobWorkflow({
   const { customerFeedbackShareUrl, customerFeedbackHasInviteToken } = useMemo(() => {
     const tok =
       getSiteCustomerFeedbackInviteToken(site) || getCustomerFeedbackInviteTokenFromAdminDto(customerFeedback);
+    const publicSiteSegment =
+      siteWorkflowPathSegment(site) || String(site?.jobCode ?? "").trim() || (site?.id ?? site?.siteId);
     return {
-      customerFeedbackShareUrl: buildCustomerFeedbackFrontDoorUrl(site?.id ?? site?.siteId, tok),
+      customerFeedbackShareUrl: buildCustomerFeedbackFrontDoorUrl(publicSiteSegment, tok),
       customerFeedbackHasInviteToken: Boolean(tok),
     };
   }, [site, customerFeedback]);

@@ -129,19 +129,21 @@ Meta: **`GET /api/meta/challenge-line-heads`** for challenge head presets.
 
 ## Customer feedback public URL
 
-- **Create invite:** `POST /api/admin/sites/{siteId}/feedback-invites` → opaque `token`.
+- **Create invite (optional):** `POST /api/admin/sites/{siteId}/feedback-invites` → opaque `token` (for legacy `?token=` links or **`POST /api/public/feedback/{token}/approve`**).
 - **`GET /api/admin/sites/{siteId}`** may include `customerFeedbackInviteToken`, `customerFeedbackInviteExpiresAt` when a valid invite exists.
 - **`GET …/customer-feedback`** may include the same token fields.
 
-**Frontend must build the customer link as** (`buildCustomerFeedbackFrontDoorUrl` in `src/config/customerFeedbackPublic.js`):
+**Bootstrap (public, no JWT):** **`GET /api/public/sites/{siteId}/customer-feedback`** — same `{siteId}` as the browser path (id, job code, or slug). Response drives headings and “already submitted” / “thank you” via **`certificateClientStatus`**, **`expired`**, **`revoked`**. **404** → inactive/unknown site.
 
-`{origin}{base}/customer-feedback/{siteId}?token={customerFeedbackInviteToken}`
+**Frontend builds the customer link** (`buildCustomerFeedbackFrontDoorUrl` in `src/config/customerFeedbackPublic.js`):
 
-Use the same `{siteId}` form your public POST expects (often numeric id in the path).
+`{origin}{base}/customer-feedback/{siteId}` with optional **`?token=`** for stricter invite flows.
 
-Submit: **`POST /api/public/sites/{siteId}/customer-feedback`** with JSON including **`token`**.
+Use the same `{siteId}` segment as in the admin workflow route when possible (slug + job code); fallback to numeric id.
 
-Do **not** ship a link without **`?token=`** when the API requires an invite.
+**Submit:** **`POST /api/public/sites/{siteId}/customer-feedback`** with the same JSON shape as today (`feedbackJson` or flat). Omit **`token`** when using the tokenless URL; include **`token`** when **`?token=`** is present (or set **`VITE_PUBLIC_CUSTOMER_FEEDBACK_TOKEN_REQUIRED=true`** to require the query param before showing the form).
+
+**Admin:** after a customer submits, refetch **`GET …/sites/{siteId}`** and **`GET …/customer-feedback`** so `certificateClientStatus` and feedback JSON stay current (workflow completion step already triggers a refresh on enter).
 
 ---
 
@@ -152,4 +154,4 @@ Do **not** ship a link without **`?token=`** when the API requires an invite.
 3. **On autosave / Save:** use **`workflow-batch`** for silent saves (with fallback) or individual **`PUT`**s for Save & next; wait for **`200`** and **`success: true`** before clearing “Saving…”.
 4. **Equipment month grid:** include **`availabilityYear`** and **`availabilityMonth`** on equipment portal saves when persisting day checkboxes.
 5. **Challenges:** send **`challengeLines`** (array / wrapper per server); wizard may embed challenge data — when both are sent in batch, **challengeLines wins**.
-6. **Feedback step:** **`POST …/feedback-invites`** if no token yet; copy link using **`customerFeedbackInviteToken`** from site or customer-feedback **`GET`**.
+6. **Feedback step:** optional **`POST …/feedback-invites`** for token links; copy link using **`customerFeedbackInviteToken`** from site or customer-feedback **`GET`**. Prefer workflow-aligned **`{siteId}`** in the public URL; refetch admin **`GET …/customer-feedback`** and **`GET …/sites/{siteId}`** when entering the completion step or after submit so **`certificateClientStatus`** updates.

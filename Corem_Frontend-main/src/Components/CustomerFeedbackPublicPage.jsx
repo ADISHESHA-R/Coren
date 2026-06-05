@@ -1,9 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useToast } from "./Toast.jsx";
 import {
   buildCustomerFeedbackFrontDoorUrl,
   buildPublicCustomerFeedbackPostBody,
+  parsePublicFeedbackContextResponse,
+  publicFeedbackContextAllowsForm,
+  publicFeedbackContextTerminalKind,
+  resolvePublicCustomerFeedbackGetUrl,
   resolvePublicCustomerFeedbackPostUrl,
   validateCustomerFeedbackFormForSubmit,
   validatePublicCustomerFeedbackInviteToken,
@@ -26,6 +30,15 @@ const emptyForm = () => ({
   additionalComments: "",
 });
 
+const defaultCtx = () => ({
+  jobCode: "",
+  customerName: "",
+  companyNameHint: "",
+  certificateClientStatus: "NONE",
+  expired: false,
+  revoked: false,
+});
+
 export default function CustomerFeedbackPublicPage() {
   const { siteId } = useParams();
   const [searchParams] = useSearchParams();
@@ -38,14 +51,78 @@ export default function CustomerFeedbackPublicPage() {
   /** Set when dev stub or server says success but nothing was persisted (see message). */
   const [submitNotice, setSubmitNotice] = useState("");
 
-  const postUrl = useMemo(() => {
-    const sid = String(siteId ?? "").trim();
-    if (!sid) return "";
-    return resolvePublicCustomerFeedbackPostUrl(sid);
-  }, [siteId]);
+  const [contextLoad, setContextLoad] = useState("idle");
+  const [contextLoadError, setContextLoadError] = useState("");
+  const [ctx, setCtx] = useState(null);
 
-  const invalidSite = !String(siteId ?? "").trim();
+  const sid = String(siteId ?? "").trim();
+  const invalidSite = !sid;
+
+  const getUrl = useMemo(() => (invalidSite ? "" : resolvePublicCustomerFeedbackGetUrl(sid)), [invalidSite, sid]);
+  const postUrl = useMemo(() => (invalidSite ? "" : resolvePublicCustomerFeedbackPostUrl(sid)), [invalidSite, sid]);
+
   const inviteTokenError = validatePublicCustomerFeedbackInviteToken(inviteToken);
+
+  useEffect(() => {
+    if (invalidSite || !getUrl) return undefined;
+    let cancelled = false;
+    setContextLoad("loading");
+    setContextLoadError("");
+    setCtx(null);
+    (async () => {
+      try {
+        const res = await fetch(getUrl, { method: "GET", headers: { Accept: "application/json" } });
+        const text = await res.text();
+        let j = {};
+        try {
+          j = text ? JSON.parse(text) : {};
+        } catch {
+          j = {};
+        }
+        if (cancelled) return;
+        if (res.status === 404) {
+          setContextLoad("404");
+          return;
+        }
+        if (!res.ok) {
+          const msg = j.message || j.error || j.detail || text?.slice(0, 280) || `Request failed (${res.status})`;
+          setContextLoad("error");
+          setContextLoadError(String(msg));
+          return;
+        }
+        if (typeof j.success === "boolean" && j.success === false) {
+          const msg = j.message || j.error || j.detail || "The server could not load this feedback page.";
+          setContextLoad("error");
+          setContextLoadError(String(msg));
+          return;
+        }
+        const parsed = parsePublicFeedbackContextResponse(j) ?? defaultCtx();
+        setCtx(parsed);
+        setContextLoad("ok");
+      } catch (e) {
+        if (!cancelled) {
+          setContextLoad("error");
+          setContextLoadError(e?.message || "Could not load this page.");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [invalidSite, getUrl, sid]);
+
+  const effectiveCtx = ctx ?? defaultCtx();
+  const terminalKind = publicFeedbackContextTerminalKind(effectiveCtx);
+  const allowsForm = publicFeedbackContextAllowsForm(effectiveCtx);
+
+  useEffect(() => {
+    if (contextLoad !== "ok" || !effectiveCtx.customerName) return undefined;
+    setForm((prev) => {
+      if (String(prev.name ?? "").trim()) return prev;
+      return { ...prev, name: effectiveCtx.customerName };
+    });
+    return undefined;
+  }, [contextLoad, effectiveCtx.customerName]);
 
   const onChange = (key) => (e) => {
     const v = e.target.value;
@@ -100,7 +177,7 @@ export default function CustomerFeedbackPublicPage() {
           /no static resource|not found|404/i.test(String(errMsg)) &&
           /customer-feedback/i.test(String(errMsg))
         ) {
-          errMsg = `${errMsg} The API may require POST /api/public/sites/{siteId}/customer-feedback with a JSON body including **token** (invite) plus feedback fields. Configure VITE_PUBLIC_CUSTOMER_FEEDBACK_POST_URL_TEMPLATE at build time if your path differs.${
+          errMsg = `${errMsg} Configure VITE_PUBLIC_CUSTOMER_FEEDBACK_POST_URL_TEMPLATE at build time if your path differs.${
             import.meta.env.DEV
               ? " For local dev without the route, set VITE_DEV_STUB_PUBLIC_CUSTOMER_FEEDBACK=true in .env.development."
               : ""
@@ -130,6 +207,11 @@ export default function CustomerFeedbackPublicPage() {
     }
   };
 
+  const contextHeadingParts = [];
+  if (effectiveCtx.jobCode) contextHeadingParts.push(`Job ${effectiveCtx.jobCode}`);
+  if (effectiveCtx.customerName) contextHeadingParts.push(effectiveCtx.customerName);
+  if (effectiveCtx.companyNameHint) contextHeadingParts.push(effectiveCtx.companyNameHint);
+
   if (invalidSite) {
     return (
       <div className="container py-4" style={{ maxWidth: "36rem" }}>
@@ -139,13 +221,34 @@ export default function CustomerFeedbackPublicPage() {
     );
   }
 
-  if (inviteTokenError) {
+  if (contextLoad === "loading" || contextLoad === "idle") {
     return (
       <div className="container py-4" style={{ maxWidth: "36rem" }}>
         <h1 className="h4 mb-3">Customer feedback</h1>
-        <p className="text-danger mb-0">{inviteTokenError}</p>
-        <p className="text-muted small mt-3 mb-0">
-          Site id in this link: <strong>{siteId}</strong>
+        <p className="text-muted mb-0">Loading…</p>
+      </div>
+    );
+  }
+
+  if (contextLoad === "404") {
+    return (
+      <div className="container py-4" style={{ maxWidth: "36rem" }}>
+        <h1 className="h4 mb-3">Customer feedback</h1>
+        <p className="text-muted mb-0">This feedback page is not available. The link may be incorrect or no longer active.</p>
+        <p className="small mt-3 mb-0">
+          <Link to="/">Back to sign in</Link>
+        </p>
+      </div>
+    );
+  }
+
+  if (contextLoad === "error") {
+    return (
+      <div className="container py-4" style={{ maxWidth: "36rem" }}>
+        <h1 className="h4 mb-3">Customer feedback</h1>
+        <p className="text-danger mb-0">{contextLoadError || "Something went wrong while loading this page."}</p>
+        <p className="small mt-3 mb-0">
+          <Link to="/">Back to sign in</Link>
         </p>
       </div>
     );
@@ -169,20 +272,99 @@ export default function CustomerFeedbackPublicPage() {
     );
   }
 
+  if (terminalKind === "submitted") {
+    return (
+      <div className="container py-4" style={{ maxWidth: "36rem" }}>
+        <h1 className="h4 mb-2">Thank you</h1>
+        {contextHeadingParts.length ? (
+          <p className="text-muted small mb-3">{contextHeadingParts.join(" · ")}</p>
+        ) : null}
+        <p className="mb-0">Your feedback has already been received.</p>
+        <p className="small mt-3 mb-0">
+          <Link to="/">Back to sign in</Link>
+        </p>
+      </div>
+    );
+  }
+
+  if (terminalKind === "approved") {
+    return (
+      <div className="container py-4" style={{ maxWidth: "36rem" }}>
+        <h1 className="h4 mb-2">Thank you</h1>
+        {contextHeadingParts.length ? (
+          <p className="text-muted small mb-3">{contextHeadingParts.join(" · ")}</p>
+        ) : null}
+        <p className="mb-0">This certificate has been approved on your side. No further action is needed here.</p>
+        <p className="small mt-3 mb-0">
+          <Link to="/">Back to sign in</Link>
+        </p>
+      </div>
+    );
+  }
+
+  if (effectiveCtx.expired) {
+    return (
+      <div className="container py-4" style={{ maxWidth: "36rem" }}>
+        <h1 className="h4 mb-3">Customer feedback</h1>
+        <p className="text-muted mb-0">This feedback link has expired. Ask your site contact for a new link if you still need to respond.</p>
+      </div>
+    );
+  }
+
+  if (effectiveCtx.revoked) {
+    return (
+      <div className="container py-4" style={{ maxWidth: "36rem" }}>
+        <h1 className="h4 mb-3">Customer feedback</h1>
+        <p className="text-muted mb-0">This feedback link is no longer valid.</p>
+      </div>
+    );
+  }
+
+  if (!allowsForm) {
+    const st = effectiveCtx.certificateClientStatus || "UNKNOWN";
+    return (
+      <div className="container py-4" style={{ maxWidth: "36rem" }}>
+        <h1 className="h4 mb-2">Customer feedback</h1>
+        {contextHeadingParts.length ? (
+          <p className="text-muted small mb-3">{contextHeadingParts.join(" · ")}</p>
+        ) : null}
+        <p className="mb-0">This page is not open for new feedback right now.</p>
+        <p className="small text-muted mt-2 mb-0">Status: {st}</p>
+      </div>
+    );
+  }
+
+  if (inviteTokenError) {
+    return (
+      <div className="container py-4" style={{ maxWidth: "36rem" }}>
+        <h1 className="h4 mb-3">Customer feedback</h1>
+        {contextHeadingParts.length ? (
+          <p className="text-muted small mb-3">{contextHeadingParts.join(" · ")}</p>
+        ) : null}
+        <p className="text-danger mb-0">{inviteTokenError}</p>
+        <p className="text-muted small mt-3 mb-0">
+          Site id in this link: <strong>{siteId}</strong>
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="container py-4" style={{ maxWidth: "42rem" }}>
       <h1 className="h4 mb-1">Customer feedback</h1>
-      <p className="text-muted small mb-4">
-        Site <strong>{siteId}</strong>. You do not need an account to submit this form.
-        {inviteToken ? (
-          <>
-            {" "}
-            This session is tied to a secure invite link.
-          </>
-        ) : null}
-      </p>
+      {contextHeadingParts.length ? (
+        <p className="text-muted small mb-1">{contextHeadingParts.join(" · ")}</p>
+      ) : (
+        <p className="text-muted small mb-1">
+          Site <strong>{siteId}</strong>
+        </p>
+      )}
+      <p className="text-muted small mb-4">You do not need an account to submit this form.</p>
 
       <form onSubmit={onSubmit} className="border rounded-3 p-3 p-md-4 shadow-sm bg-body">
+        {inviteToken ? (
+          <p className="small text-muted border-bottom pb-2 mb-3">This session uses a secure invite link.</p>
+        ) : null}
         {error ? (
           <div className="alert alert-danger py-2 small" role="alert">
             {error}

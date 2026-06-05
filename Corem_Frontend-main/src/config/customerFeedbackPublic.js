@@ -1,20 +1,22 @@
 import { API_BASE_URL } from "./apiBaseUrl.js";
 
 /**
- * Anonymous customer feedback POST (no JWT). Override if your backend path differs.
+ * Anonymous customer feedback on the same path (no JWT). Override if your backend differs.
  * Use `{siteId}` placeholder. Relative paths are resolved against `API_BASE_URL`.
  *
- * ProjectC-style API: POST body must include a non-blank **token** (opaque invite) that belongs to
- * `{siteId}`; the SPA should open `/customer-feedback/{siteId}?token=…` (see `buildCustomerFeedbackFrontDoorUrl`).
+ * - **GET** (bootstrap): `GET …/api/public/sites/{siteId}/customer-feedback` — no token; returns
+ *   `PublicFeedbackContextResponse` (jobCode, customerName, certificateClientStatus, expired, revoked, …).
+ * - **POST** (submit): same URL; body matches your backend (`feedbackJson` vs flat). **token** in the
+ *   body is optional when using the tokenless public URL; legacy links may still use `?token=…`.
  * Examples:
  *   /api/public/sites/{siteId}/customer-feedback
  *   https://api.example.com/api/v1/public/feedback/{siteId}
  */
 const DEFAULT_POST_TEMPLATE = "/api/public/sites/{siteId}/customer-feedback";
 
-/** When not `"false"` / `"0"`, the public form requires `?token=` (production default). */
+/** When not `"false"` / `"0"`, submit requires `?token=` in the URL (stricter legacy flow). Default false = tokenless POST allowed. */
 export function isPublicCustomerFeedbackTokenRequired() {
-  const v = String(import.meta.env.VITE_PUBLIC_CUSTOMER_FEEDBACK_TOKEN_REQUIRED ?? "true")
+  const v = String(import.meta.env.VITE_PUBLIC_CUSTOMER_FEEDBACK_TOKEN_REQUIRED ?? "false")
     .trim()
     .toLowerCase();
   return v !== "false" && v !== "0";
@@ -110,7 +112,8 @@ export function sanitizeCustomerFeedbackFormFields(form) {
  * POST body for anonymous customer feedback.
  * - Default `feedback_json`: `{ token?, feedbackJson: "<stringified inner>" }` — matches admin GET `data.feedbackJson`.
  * - `flat`: `{ token?, ...inner }`. Set `VITE_PUBLIC_CUSTOMER_FEEDBACK_BODY_MODE=flat`.
- * - **token** (invite) is required by ProjectC `POST /api/public/sites/{siteId}/customer-feedback`; omit only when testing with `VITE_PUBLIC_CUSTOMER_FEEDBACK_TOKEN_REQUIRED=false`.
+ * - **token** (invite): include in the body when present (`?token=`). Omit entirely when tokenless
+ *   (do not send `null` unless your backend expects it — this helper omits the key).
  */
 export function buildPublicCustomerFeedbackPostBody(form, inviteToken) {
   const mode = String(import.meta.env.VITE_PUBLIC_CUSTOMER_FEEDBACK_BODY_MODE ?? "feedback_json")
@@ -161,10 +164,7 @@ export function validatePublicCustomerFeedbackInviteToken(inviteToken) {
   return "";
 }
 
-/**
- * Full URL for POST (no Authorization header). Same-origin in dev when `API_BASE_URL` is "".
- */
-export function resolvePublicCustomerFeedbackPostUrl(siteId) {
+function resolvePublicCustomerFeedbackApiUrl(siteId) {
   const id = encodeURIComponent(String(siteId ?? "").trim());
   const raw = (import.meta.env.VITE_PUBLIC_CUSTOMER_FEEDBACK_POST_URL_TEMPLATE || DEFAULT_POST_TEMPLATE).trim();
   const template = raw || DEFAULT_POST_TEMPLATE;
@@ -175,6 +175,69 @@ export function resolvePublicCustomerFeedbackPostUrl(siteId) {
   const path = replaced.startsWith("/") ? replaced : `/${replaced}`;
   const base = String(API_BASE_URL ?? "").replace(/\/$/, "");
   return `${base}${path}`;
+}
+
+/** Full URL for GET bootstrap (no Authorization header). Same path template as POST. */
+export function resolvePublicCustomerFeedbackGetUrl(siteId) {
+  return resolvePublicCustomerFeedbackApiUrl(siteId);
+}
+
+/**
+ * Full URL for POST (no Authorization header). Same-origin in dev when `API_BASE_URL` is "".
+ */
+export function resolvePublicCustomerFeedbackPostUrl(siteId) {
+  return resolvePublicCustomerFeedbackApiUrl(siteId);
+}
+
+/** Unwrap `{ success, data }` or return object as-is. */
+export function unwrapPublicCustomerFeedbackEnvelope(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  if (raw.success === true && raw.data != null && typeof raw.data === "object") return raw.data;
+  if (raw.data != null && typeof raw.data === "object") return raw.data;
+  return raw;
+}
+
+/**
+ * Normalised public GET context (`PublicFeedbackContextResponse`-shaped).
+ * @param {unknown} raw — parsed JSON from GET
+ */
+export function parsePublicFeedbackContextResponse(raw) {
+  const d = unwrapPublicCustomerFeedbackEnvelope(raw);
+  if (!d || typeof d !== "object") return null;
+  return {
+    jobCode: String(d.jobCode ?? "").trim(),
+    customerName: String(d.customerName ?? "").trim(),
+    companyNameHint: String(d.companyNameHint ?? "").trim(),
+    certificateClientStatus: String(d.certificateClientStatus ?? "NONE").trim(),
+    expired: Boolean(d.expired),
+    revoked: Boolean(d.revoked),
+  };
+}
+
+const OPEN_FEEDBACK_STATUSES = new Set([
+  "",
+  "NONE",
+  "PENDING",
+  "PENDING_CLIENT_FEEDBACK",
+  "AWAITING_CLIENT_FEEDBACK",
+  "AWAITING_FEEDBACK",
+]);
+
+/** True when the customer may still fill the form (subject to expired/revoked). */
+export function publicFeedbackContextAllowsForm(ctx) {
+  if (!ctx || typeof ctx !== "object") return false;
+  if (ctx.expired || ctx.revoked) return false;
+  const s = String(ctx.certificateClientStatus ?? "NONE").trim().toUpperCase();
+  return OPEN_FEEDBACK_STATUSES.has(s);
+}
+
+/** `"submitted"` | `"approved"` | null — drives thank-you / already-done copy. */
+export function publicFeedbackContextTerminalKind(ctx) {
+  if (!ctx || typeof ctx !== "object") return null;
+  const s = String(ctx.certificateClientStatus ?? "").trim().toUpperCase();
+  if (s === "FEEDBACK_SUBMITTED") return "submitted";
+  if (s === "APPROVED_BY_CLIENT") return "approved";
+  return null;
 }
 
 /**
