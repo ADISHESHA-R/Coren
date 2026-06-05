@@ -1111,6 +1111,10 @@ export default function AdminSiteJobWorkflow({
     [showError, onExit],
   );
 
+  /** Stable for async `loadAll` — avoid re-running initial fetch when parent passes unstable `showError` from context. */
+  const reportWorkflowFailureRef = useRef(reportWorkflowFailure);
+  reportWorkflowFailureRef.current = reportWorkflowFailure;
+
   const refreshSiteAttendanceList = useCallback(async () => {
     if (!siteId) return;
     setSiteAttendanceLoading(true);
@@ -1159,10 +1163,10 @@ export default function AdminSiteJobWorkflow({
       }
     } catch (e) {
       setSiteAttendanceRecords([]);
-      reportWorkflowFailure(e?.message || "Failed to load attendance submissions for this site.");
+      reportWorkflowFailureRef.current(e?.message || "Failed to load attendance submissions for this site.");
     }
     setSiteAttendanceLoading(false);
-  }, [siteId, reportWorkflowFailure]);
+  }, [siteId]);
 
   useEffect(() => {
     if (currentStepIndex !== 8 || !siteId) return undefined;
@@ -1177,14 +1181,14 @@ export default function AdminSiteJobWorkflow({
     setEmployeeOptions([]);
     const authHeader = getAuthHeader();
     if (!authHeader) {
-      reportWorkflowFailure("Not authenticated. Returning to dashboard.");
+      reportWorkflowFailureRef.current("Not authenticated. Returning to dashboard.");
       setLoading(false);
       return;
     }
     try {
       const siteRes = await adminFetchJson(`${BASE_URL}/api/admin/sites/${siteId}`);
       if (!siteRes.res.ok || !siteRes.data?.success) {
-        reportWorkflowFailure(siteRes.data?.message || "Failed to load site.");
+        reportWorkflowFailureRef.current(siteRes.data?.message || "Failed to load site.");
         setLoading(false);
         return;
       }
@@ -1311,7 +1315,10 @@ export default function AdminSiteJobWorkflow({
           : serverStep1;
       const uiStep = Math.min(Math.max(effectiveStep1 - 1, 0), STEPS.length - 1);
       setCurrentStepIndex(uiStep);
-      onStepIndexChange?.(uiStep);
+      const urlStep = urlStep1BasedRef.current;
+      if (urlStep == null || !Number.isFinite(urlStep) || Math.floor(urlStep) !== effectiveStep1) {
+        onStepIndexChangeRef.current?.(uiStep);
+      }
       setAttendanceBlock(0);
       setAttendanceDirtyCells(new Map());
 
@@ -1335,10 +1342,11 @@ export default function AdminSiteJobWorkflow({
       }
     } catch (e) {
       workflowUserDirectoryLoadSeqRef.current += 1;
-      reportWorkflowFailure(e?.message || "Failed to load workflow.");
+      reportWorkflowFailureRef.current(e?.message || "Failed to load workflow.");
     }
     setLoading(false);
-  }, [siteId, reportWorkflowFailure, onStepIndexChange]);
+    // Intentionally only [siteId]: callbacks read via refs so unstable `showError`/toast refs do not retrigger this fetch loop.
+  }, [siteId]);
 
   const refreshCustomerFeedback = useCallback(async () => {
     if (!siteId) return;
