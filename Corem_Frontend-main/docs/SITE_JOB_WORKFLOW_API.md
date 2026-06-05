@@ -127,6 +127,70 @@ If you send both `wizard` and `challengeLines`, **challengeLines wins** for norm
 
 **Admin customer feedback DTO (ProjectC / current dev):** `GET …/customer-feedback` returns `{ success, data }` where **`data`** is **`SiteCustomerFeedbackAdminDto`**: answers appear as **top-level camelCase** fields (`name`, `email`, `phone`, `companyName`, `productQuality`, …, `additionalComments`) matching the public POST, plus unchanged **`feedbackJson`** (raw string) when present. The SPA binds read-only fields from **`data.*`**; `parseCustomerFeedbackRecord` still merges **`feedbackJson`** and snake_case / nested shapes for older or odd responses. **`GET …/sites/{id}`** may also expose **`customerFeedbackJson`** (same stored blob); the completion step **merges** site + dedicated GET so wizard-only persistence still displays.
 
+### Backend JSON contract (admin customer feedback)
+
+This is the shape **`AdminSiteJobWorkflow`** Step 10 expects after **`extractCustomerFeedbackDtoFromAdminResponse`** (`src/data/siteJobWorkflowForms.js`). Backend teams should align **`GET /api/admin/sites/{siteId}/customer-feedback`** (and optional mirrors on **`GET /api/admin/sites/{siteId}`**) with this. The client then runs **`normalizeAdminCustomerFeedbackDto`** (same module) on the extracted/merged object before field merge — that handles paging, object-typed `feedbackJson`, and nested string wrappers.
+
+**Current server alignment:** The API matches the preferred contract: **`data`** is a normal JSON object, the admin DTO is **camelCase-first** with **`@JsonAlias`** for snake_case on ingest, **`success`** / **`Success`** / **`status`** stay consistent for clients that read different flags, **`feedback_json`** is duplicated alongside **`feedbackJson`** when the blob is non-empty, and the **site** row exposes **`customer_feedback_json`** / **`customer_feedback_payload`** (plus camelCase mirrors) for merge. **`likelihoodRecommend`** may be a JSON number; the UI accepts string or number. Double-encoded blobs, stringified **`data`**, `Page.content`, and **`data` / `result` / `payload`** drilling remain **client-side** tolerances for gateways or legacy stacks — not required from this API.
+
+#### 1. HTTP envelope
+
+- Body must indicate success with at least one of: **`success: true`**, **`Success: true`**, or **`status`** in `{ true, "true", 1, "1" }` (JSON **boolean** `true` for `status` / `success` is the usual case and is accepted).
+- **Preferred:** `{ "success": true, "message": "…", "data": { … } }` where **`data`** is a **JSON object** (not a bare array).
+- **`data`** may be a **string** of JSON; the client parses it once.
+- Extra gateway wrappers are tolerated: a single-key `{ "data": { … } }` chain is unwrapped; the client may also drill **`data` → `result` → `payload`** until it finds an object that looks like the DTO (e.g. contains `feedbackJson`, `certificateClientStatus`, `siteId`, `jobCode`, or `name` / `email`).
+
+#### 2. Ideal DTO inside `data` (best for Step 10)
+
+Put answers on the **same object** as metadata, **camelCase**, matching the public form:
+
+| Field | Notes |
+|-------|--------|
+| `certificateClientStatus` | e.g. `FEEDBACK_SUBMITTED` |
+| `customerFeedbackApprovedAt` | optional |
+| `siteId`, `jobCode` | optional identifiers |
+| `name`, `email`, `phone`, `companyName` | strings |
+| `productQuality`, `customerService`, `machiningQuality`, `pricing`, `shippingDelivery` | as stored |
+| `likelihoodRecommend` | string or number |
+| `otherCategoryNote`, `specificFeedback`, `suggestions`, `additionalComments` | strings |
+
+**Example (ideal — no `feedbackJson` required):**
+
+```json
+{
+  "success": true,
+  "data": {
+    "siteId": 12,
+    "jobCode": "sam123",
+    "certificateClientStatus": "FEEDBACK_SUBMITTED",
+    "name": "Test Test",
+    "email": "user@example.com"
+  }
+}
+```
+
+#### 3. When answers live only in `feedbackJson`
+
+The client still supports **`feedbackJson`** or **`feedback_json`** as a **string** whose value is JSON (possibly nested / double-encoded).
+
+- **Single-encoded inner form:**  
+  `"feedbackJson": "{\"name\":\"Test Test\",\"email\":\"user@example.com\"}"`
+- **Double-encoded wrapper** (string contains `{ "feedbackJson": "<another JSON string>" }`):  
+  `"feedbackJson": "{\"feedbackJson\":\"{\\\"name\\\":\\\"Test Test\\\",\\\"email\\\":\\\"user@example.com\\\"}\"}"`  
+  The UI flattens repeated string `feedbackJson` / `feedback_json` layers until `name`, `email`, etc. are visible.
+- **`feedbackJson` as a JSON object** (e.g. Jackson `Map`): same keys as the inner form; the client stringifies then runs the same flatten path.
+- **Spring `Page`:** `data` may be `{ "content": [ { …dto… } ], … }`; the first array element is used when it looks like the feedback DTO.
+
+Optional string/blob keys merged the same way include **`customerFeedbackJson`**, **`payload`**, **`json`**, **`body`**, etc. (see `mergeJsonFromKnownStringFields` in `siteJobWorkflowForms.js`). When **both** the dedicated GET and **`GET …/sites/{id}`** carry different blobs, the site blob is attached as **`customerFeedbackJson`** and merged **before** `feedbackJson` so the endpoint wins on key clashes but the site row can **fill missing** fields (`mergeSiteAndEndpointCustomerFeedbackForAdmin` + ordered merge in `mergeJsonFromKnownStringFields`).
+
+#### 4. Snake_case
+
+If the API returns snake_case on the DTO, a subset is mapped to camelCase (e.g. `customer_name` → `name`, `customer_email` / `e_mail` → `email`, `company_name` → `companyName`, `phone_number` → `phone`, `product_quality` → `productQuality`). CamelCase on **`data`** is still preferred.
+
+#### 5. Site row mirror (`GET …/sites/{id}`)
+
+For the completion step, the SPA **merges** the dedicated customer-feedback GET with the **site** object. Supported blob fields on the site include: **`customerFeedbackJson`**, **`customer_feedback_json`**, **`customerFeedbackPayload`**, **`customer_feedback_payload`**. If the dedicated GET omits `feedbackJson` but the site row carries the same stored blob, the UI can still populate fields.
+
 Meta: **`GET /api/meta/challenge-line-heads`** for challenge head presets.
 
 ---

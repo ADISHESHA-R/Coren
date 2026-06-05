@@ -1204,6 +1204,7 @@ export default function AdminSiteJobWorkflow({
       return;
     }
     try {
+      setCustomerFeedback(null);
       const siteRes = await adminFetchJson(`${adminSitesApiBase(siteId)}`);
       if (!siteRes.res.ok || !siteRes.data?.success) {
         reportWorkflowFailureRef.current(siteRes.data?.message || "Failed to load site.");
@@ -1310,8 +1311,9 @@ export default function AdminSiteJobWorkflow({
       if (reg.res.ok && reg.data?.success && reg.data.data) setAttendanceRegister(reg.data.data);
       else setAttendanceRegister(null);
 
-      if (fb.res.ok && adminResponseSuccess(fb.data)) setCustomerFeedback(extractCustomerFeedbackDtoFromAdminResponse(fb.data) ?? null);
-      else setCustomerFeedback(null);
+      if (fb.res.ok && adminResponseSuccess(fb.data)) {
+        setCustomerFeedback(extractCustomerFeedbackDtoFromAdminResponse(fb.data) ?? null);
+      }
 
       if (mach.res.ok && mach.data?.success && Array.isArray(mach.data.data)) setMachineryList(mach.data.data);
       else setMachineryList([]);
@@ -1377,8 +1379,9 @@ export default function AdminSiteJobWorkflow({
     if (!getAuthHeader()) return;
     try {
       const fb = await adminFetchJson(`${adminSitesApiBase(siteId)}/customer-feedback`);
-      if (fb.res.ok && adminResponseSuccess(fb.data)) setCustomerFeedback(extractCustomerFeedbackDtoFromAdminResponse(fb.data) ?? null);
-      else setCustomerFeedback(null);
+      if (fb.res.ok && adminResponseSuccess(fb.data)) {
+        setCustomerFeedback(extractCustomerFeedbackDtoFromAdminResponse(fb.data) ?? null);
+      }
       const siteRes = await adminFetchJson(`${adminSitesApiBase(siteId)}`);
       if (siteRes.res.ok && siteRes.data?.success && siteRes.data.data) {
         setSite((prev) => ({ ...(prev && typeof prev === "object" ? prev : {}), ...siteRes.data.data }));
@@ -1587,6 +1590,24 @@ export default function AdminSiteJobWorkflow({
         /** Fall back to legacy PUTs if batch is missing, rejects the body, or returns an error (e.g. wizard shape mismatch). */
         const batchOk = res.ok && data?.success !== false;
         if (batchOk) {
+          if (data?.data && typeof data.data === "object" && !Array.isArray(data.data)) {
+            const d = data.data;
+            const sitePatch = {};
+            for (const k of [
+              "customerFeedbackJson",
+              "customer_feedback_json",
+              "certificateClientStatus",
+              "customerFeedbackApprovedAt",
+              "customerFeedbackInviteToken",
+              "customerFeedbackInviteExpiresAt",
+              "updatedAt",
+            ]) {
+              if (Object.prototype.hasOwnProperty.call(d, k) && d[k] !== undefined) sitePatch[k] = d[k];
+            }
+            if (Object.keys(sitePatch).length > 0) {
+              setSite((prev) => ({ ...(prev && typeof prev === "object" ? prev : {}), ...sitePatch }));
+            }
+          }
           if (ci === 3) {
             const techPayload = normalizeTechnicianPaymentLines(mergeTechnicianPaymentLinesByPerson(s.technicianPaymentLines || []));
             setTechnicianPaymentLines(techPayload);

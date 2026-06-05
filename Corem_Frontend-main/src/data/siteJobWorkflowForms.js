@@ -606,7 +606,10 @@ const CUSTOMER_FEEDBACK_INNER_KEYS = [
 /** Snake_case keys some APIs use on the wire (backend may alias; admin GET is normally camelCase on `data`). */
 const CUSTOMER_FEEDBACK_SNAKE_TO_CAMEL = {
   customer_name: "name",
+  customer_email: "email",
+  e_mail: "email",
   company_name: "companyName",
+  phone_number: "phone",
   product_quality: "productQuality",
   customer_service: "customerService",
   machining_quality: "machiningQuality",
@@ -616,6 +619,28 @@ const CUSTOMER_FEEDBACK_SNAKE_TO_CAMEL = {
   specific_feedback: "specificFeedback",
   additional_comments: "additionalComments",
 };
+
+/**
+ * Backend sometimes stores `customer_feedback_payload` as JSON whose only meaningful leaf is again
+ * `feedbackJson` as a **string** (double-encoded). Flatten so inner `name`, `email`, … surface at the top level.
+ */
+function flattenStringifiedFeedbackJsonWrapper(obj) {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return obj;
+  let cur = { ...obj };
+  for (let i = 0; i < 8; i += 1) {
+    const innerStr = cur.feedbackJson ?? cur.feedback_json;
+    if (typeof innerStr !== "string" || !innerStr.trim()) break;
+    try {
+      const innerObj = JSON.parse(innerStr);
+      if (!innerObj || typeof innerObj !== "object" || Array.isArray(innerObj)) break;
+      const { feedbackJson: _a, feedback_json: _b, ...rest } = cur;
+      cur = { ...rest, ...innerObj };
+    } catch {
+      break;
+    }
+  }
+  return cur;
+}
 
 function tryParseFeedbackJsonBlob(raw) {
   let v = raw;
@@ -632,14 +657,18 @@ function tryParseFeedbackJsonBlob(raw) {
       continue;
     }
     if (typeof v === "object" && v !== null && !Array.isArray(v)) {
-      return { ...v };
+      return flattenStringifiedFeedbackJsonWrapper({ ...v });
     }
     return {};
   }
   return {};
 }
 
-/** Merge parsed objects from any string/blob field the API might use for stored answers. */
+/**
+ * Merge parsed objects from string/blob fields. Order matters: **`customerFeedbackJson` before
+ * `feedback_json` / `feedbackJson`** so a site-mirrored blob can fill gaps and the dedicated
+ * endpoint string still wins on overlapping keys (later spread overwrites).
+ */
 function mergeJsonFromKnownStringFields(fb) {
   if (!fb || typeof fb !== "object") return {};
   const keys = [
@@ -730,10 +759,81 @@ function unwrapNestedDataDto(d) {
   return cur;
 }
 
+/** Some gateways wrap the DTO again under `data` / `result` / `payload`. */
+function looksLikeCustomerFeedbackAdminDto(o) {
+  if (!o || typeof o !== "object" || Array.isArray(o)) return false;
+  return (
+    Object.prototype.hasOwnProperty.call(o, "feedbackJson") ||
+    Object.prototype.hasOwnProperty.call(o, "feedback_json") ||
+    Object.prototype.hasOwnProperty.call(o, "certificateClientStatus") ||
+    Object.prototype.hasOwnProperty.call(o, "customerFeedbackJson") ||
+    typeof o.name === "string" ||
+    typeof o.email === "string" ||
+    o.siteId != null ||
+    (o.jobCode != null && String(o.jobCode).trim() !== "")
+  );
+}
+
+function drillToCustomerFeedbackAdminDto(obj) {
+  let cur = obj;
+  for (let depth = 0; depth < 6 && cur && typeof cur === "object" && !Array.isArray(cur); depth += 1) {
+    if (looksLikeCustomerFeedbackAdminDto(cur)) return cur;
+    const next =
+      (cur.data != null && typeof cur.data === "object" && !Array.isArray(cur.data) ? cur.data : null) ||
+      (cur.result != null && typeof cur.result === "object" && !Array.isArray(cur.result) ? cur.result : null) ||
+      (cur.payload != null && typeof cur.payload === "object" && !Array.isArray(cur.payload) ? cur.payload : null);
+    if (!next) return cur;
+    cur = next;
+  }
+  return cur;
+}
+
+/** Spring-style `Page` / list wrappers: `{ content: [ dto ] }` → first element when it looks like feedback DTO. */
+function unwrapPagedOrSingletonContent(dto) {
+  if (!dto || typeof dto !== "object" || Array.isArray(dto)) return dto;
+  const content = dto.content;
+  if (!Array.isArray(content) || content.length === 0) return dto;
+  const first = content[0];
+  if (!first || typeof first !== "object" || Array.isArray(first)) return dto;
+  if (looksLikeCustomerFeedbackAdminDto(first)) return first;
+  return dto;
+}
+
+/**
+ * Coerce **`feedbackJson` / `feedback_json` objects** (Jackson sometimes deserialises JSON columns to Map)
+ * into strings so the same flatten/parse path as double-encoded strings applies.
+ */
+function coerceFeedbackJsonObjectFieldsToString(obj) {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return obj;
+  const out = { ...obj };
+  for (const k of ["feedbackJson", "feedback_json"]) {
+    const v = out[k];
+    if (v != null && typeof v === "object" && !Array.isArray(v)) {
+      try {
+        out[k] = JSON.stringify(v);
+      } catch {
+        /* leave */
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Single entry point after **`extractCustomerFeedbackDtoFromAdminResponse`**: unwrap paging, coerce
+ * object `feedbackJson`, then flatten nested string wrappers. Safe to call on merged site + GET DTO.
+ */
+export function normalizeAdminCustomerFeedbackDto(dto) {
+  if (!dto || typeof dto !== "object" || Array.isArray(dto)) return dto;
+  let d = unwrapPagedOrSingletonContent(dto);
+  d = coerceFeedbackJsonObjectFieldsToString(d);
+  return flattenStringifiedFeedbackJsonWrapper({ ...d });
+}
+
 export function adminResponseSuccess(body) {
   if (!body || typeof body !== "object") return false;
-  const v = body.success ?? body.Success;
-  return v === true || v === "true";
+  const v = body.success ?? body.Success ?? body.status;
+  return v === true || v === "true" || v === 1 || v === "1";
 }
 
 /**
@@ -767,11 +867,12 @@ export function extractCustomerFeedbackDtoFromAdminResponse(body) {
       }
     }
     if (typeof unwrapped !== "object" || unwrapped == null || Array.isArray(unwrapped)) return null;
-    return unwrapped;
+    const drilled = drillToCustomerFeedbackAdminDto(unwrapped);
+    return normalizeAdminCustomerFeedbackDto(drilled);
   }
   const { success: _s, Success: _S, message: _m, error: _e, code: _c, ...rest } = body;
   if (!rest || typeof rest !== "object" || Object.keys(rest).length === 0) return null;
-  return rest;
+  return normalizeAdminCustomerFeedbackDto(rest);
 }
 
 function strField(v) {
@@ -782,24 +883,25 @@ function strField(v) {
 /** Parse admin customer feedback for the completion-step read-only grid. Prefer DTO root + `feedbackJson` merge (see ProjectC GET …/customer-feedback). */
 export function parseCustomerFeedbackRecord(fb) {
   if (!fb || typeof fb !== "object") return null;
-  const merged = mergeCustomerFeedbackInnerFields(fb);
+  const root = normalizeAdminCustomerFeedbackDto(fb);
+  const merged = mergeCustomerFeedbackInnerFields(root);
   const rawSource =
-    fb.feedbackJson ??
-    fb.feedback_json ??
-    fb.customerFeedbackJson ??
-    (typeof fb.json === "string" ? fb.json : null) ??
-    (typeof fb.payload === "string" ? fb.payload : null);
+    root.feedbackJson ??
+    root.feedback_json ??
+    root.customerFeedbackJson ??
+    (typeof root.json === "string" ? root.json : null) ??
+    (typeof root.payload === "string" ? root.payload : null);
   const rawJson =
     typeof rawSource === "string" && rawSource.trim()
       ? rawSource
       : Object.keys(merged).length > 0
         ? JSON.stringify(merged)
-        : typeof fb.feedbackJson === "string"
-          ? fb.feedbackJson
-          : JSON.stringify(fb.feedbackJson ?? {});
+        : typeof root.feedbackJson === "string"
+          ? root.feedbackJson
+          : JSON.stringify(root.feedbackJson ?? {});
   return {
-    certificateClientStatus: fb.certificateClientStatus ?? "NONE",
-    customerFeedbackApprovedAt: fb.customerFeedbackApprovedAt ?? null,
+    certificateClientStatus: root.certificateClientStatus ?? fb.certificateClientStatus ?? "NONE",
+    customerFeedbackApprovedAt: root.customerFeedbackApprovedAt ?? fb.customerFeedbackApprovedAt ?? null,
     name: strField(merged.name),
     email: strField(merged.email),
     phone: strField(merged.phone),

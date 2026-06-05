@@ -91,6 +91,9 @@ export function mergeSiteAndEndpointCustomerFeedbackForAdmin(site, customerFeedb
   const existingJson = String(out.feedbackJson ?? out.feedback_json ?? "").trim();
   if (siteBlobStr && !existingJson) {
     out.feedbackJson = siteBlobStr;
+  } else if (siteBlobStr && existingJson && siteBlobStr.trim() !== existingJson.trim()) {
+    /** Site mirror can carry fields missing from the dedicated GET blob; parse merges `customerFeedbackJson` before `feedbackJson`. */
+    out.customerFeedbackJson = siteBlobStr;
   }
 
   if (out.certificateClientStatus == null && siteObj.certificateClientStatus != null) {
