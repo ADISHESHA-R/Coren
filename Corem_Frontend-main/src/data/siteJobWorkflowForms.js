@@ -507,34 +507,141 @@ export function resizeBehaviourMemberColumns(state, newCount) {
   return { ...state, members, memberEmployeeUserIds, matrix, remarks: state.remarks ?? "" };
 }
 
-/** Parse customer feedback admin payload for display / local edit mirror. */
+/** Form field keys on SiteCustomerFeedbackAdminDto root or inside `feedbackJson` (ProjectC: both returned on GET). */
+const CUSTOMER_FEEDBACK_INNER_KEYS = [
+  "name",
+  "email",
+  "phone",
+  "companyName",
+  "productQuality",
+  "customerService",
+  "machiningQuality",
+  "pricing",
+  "shippingDelivery",
+  "likelihoodRecommend",
+  "otherCategoryNote",
+  "specificFeedback",
+  "suggestions",
+  "additionalComments",
+];
+
+/** Snake_case keys some APIs use on the wire (backend may alias; admin GET is normally camelCase on `data`). */
+const CUSTOMER_FEEDBACK_SNAKE_TO_CAMEL = {
+  customer_name: "name",
+  company_name: "companyName",
+  product_quality: "productQuality",
+  customer_service: "customerService",
+  machining_quality: "machiningQuality",
+  shipping_delivery: "shippingDelivery",
+  likelihood_recommend: "likelihoodRecommend",
+  other_category_note: "otherCategoryNote",
+  specific_feedback: "specificFeedback",
+  additional_comments: "additionalComments",
+};
+
+function tryParseFeedbackJsonBlob(raw) {
+  if (raw == null) return {};
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const o = JSON.parse(raw);
+      return o && typeof o === "object" && !Array.isArray(o) ? o : {};
+    } catch {
+      return {};
+    }
+  }
+  if (typeof raw === "object" && !Array.isArray(raw)) return { ...raw };
+  return {};
+}
+
+function pickCustomerFeedbackInner(obj) {
+  if (!obj || typeof obj !== "object") return {};
+  const out = {};
+  for (const k of CUSTOMER_FEEDBACK_INNER_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(obj, k) && obj[k] !== undefined && obj[k] !== null) {
+      out[k] = obj[k];
+    }
+  }
+  return out;
+}
+
+function expandSnakeCaseFeedbackFields(obj) {
+  if (!obj || typeof obj !== "object") return {};
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === undefined || v === null) continue;
+    const camel = CUSTOMER_FEEDBACK_SNAKE_TO_CAMEL[k];
+    if (camel) out[camel] = v;
+  }
+  return out;
+}
+
+/**
+ * Merge inner feedback from: DTO root (ProjectC **SiteCustomerFeedbackAdminDto** top-level fields),
+ * snake_case aliases, nested blobs, then **`feedbackJson`** (wins on conflict — matches stored raw string).
+ */
+function mergeCustomerFeedbackInnerFields(fb) {
+  const fromJson = tryParseFeedbackJsonBlob(fb.feedbackJson ?? fb.feedback_json);
+  const nestedSources = [fb.feedback, fb.feedbackPayload, fb.feedbackData, fb.customerFeedbackPayload].filter(
+    (x) => x && typeof x === "object" && !Array.isArray(x),
+  );
+  const fromNested = Object.assign({}, ...nestedSources.map((o) => pickCustomerFeedbackInner(o)));
+  const fromRoot = pickCustomerFeedbackInner(fb);
+  const fromSnake = expandSnakeCaseFeedbackFields(fb);
+  return { ...fromRoot, ...fromSnake, ...fromNested, ...fromJson };
+}
+
+/**
+ * Normalise admin API envelope for **GET …/customer-feedback**.
+ * Normal case: `{ success: true, data: SiteCustomerFeedbackAdminDto }` — use **`body.data`** (flat answer fields).
+ * Also accepts a flat `{ success, name, … }` body for older stacks.
+ */
+export function extractCustomerFeedbackDtoFromAdminResponse(body) {
+  if (!body || typeof body !== "object" || body.success !== true) return null;
+  if ("data" in body) {
+    const d = body.data;
+    if (d != null && typeof d === "object" && !Array.isArray(d)) return d;
+    return null;
+  }
+  const { success: _s, message: _m, error: _e, code: _c, ...rest } = body;
+  if (!rest || typeof rest !== "object" || Object.keys(rest).length === 0) return null;
+  return rest;
+}
+
+function strField(v) {
+  if (v == null) return "";
+  return String(v);
+}
+
+/** Parse admin customer feedback for the completion-step read-only grid. Prefer DTO root + `feedbackJson` merge (see ProjectC GET …/customer-feedback). */
 export function parseCustomerFeedbackRecord(fb) {
   if (!fb || typeof fb !== "object") return null;
-  let extra = {};
-  try {
-    const raw = fb.feedbackJson;
-    if (typeof raw === "string" && raw.trim()) extra = JSON.parse(raw);
-    else if (raw && typeof raw === "object") extra = raw;
-  } catch {
-    extra = {};
-  }
+  const merged = mergeCustomerFeedbackInnerFields(fb);
+  const rawSource = fb.feedbackJson ?? fb.feedback_json;
+  const rawJson =
+    typeof rawSource === "string" && rawSource.trim()
+      ? rawSource
+      : Object.keys(merged).length > 0
+        ? JSON.stringify(merged)
+        : typeof fb.feedbackJson === "string"
+          ? fb.feedbackJson
+          : JSON.stringify(fb.feedbackJson ?? {});
   return {
     certificateClientStatus: fb.certificateClientStatus ?? "NONE",
     customerFeedbackApprovedAt: fb.customerFeedbackApprovedAt ?? null,
-    name: extra.name ?? "",
-    email: extra.email ?? "",
-    phone: extra.phone ?? "",
-    companyName: extra.companyName ?? "",
-    productQuality: extra.productQuality ?? "",
-    customerService: extra.customerService ?? "",
-    machiningQuality: extra.machiningQuality ?? "",
-    pricing: extra.pricing ?? "",
-    shippingDelivery: extra.shippingDelivery ?? "",
-    otherCategoryNote: extra.otherCategoryNote ?? "",
-    specificFeedback: extra.specificFeedback ?? "",
-    suggestions: extra.suggestions ?? "",
-    likelihoodRecommend: extra.likelihoodRecommend != null ? String(extra.likelihoodRecommend) : "",
-    additionalComments: extra.additionalComments ?? "",
-    rawJson: typeof fb.feedbackJson === "string" ? fb.feedbackJson : JSON.stringify(fb.feedbackJson ?? {}),
+    name: strField(merged.name),
+    email: strField(merged.email),
+    phone: strField(merged.phone),
+    companyName: strField(merged.companyName),
+    productQuality: strField(merged.productQuality),
+    customerService: strField(merged.customerService),
+    machiningQuality: strField(merged.machiningQuality),
+    pricing: strField(merged.pricing),
+    shippingDelivery: strField(merged.shippingDelivery),
+    otherCategoryNote: strField(merged.otherCategoryNote),
+    specificFeedback: strField(merged.specificFeedback),
+    suggestions: strField(merged.suggestions),
+    likelihoodRecommend: merged.likelihoodRecommend != null && merged.likelihoodRecommend !== "" ? strField(merged.likelihoodRecommend) : "",
+    additionalComments: strField(merged.additionalComments),
+    rawJson,
   };
 }

@@ -123,6 +123,8 @@ If you send both `wizard` and `challengeLines`, **challengeLines wins** for norm
 | Customer feedback (admin) | `GET …/customer-feedback` | — |
 | Customer feedback invite | — | `POST …/feedback-invites` |
 
+**Admin customer feedback DTO (ProjectC / current dev):** `GET …/customer-feedback` returns `{ success, data }` where **`data`** is **`SiteCustomerFeedbackAdminDto`**: answers appear as **top-level camelCase** fields (`name`, `email`, `phone`, `companyName`, `productQuality`, …, `additionalComments`) matching the public POST, plus unchanged **`feedbackJson`** (raw string) when present. The SPA binds read-only fields from **`data.*`**; `parseCustomerFeedbackRecord` still merges **`feedbackJson`** and snake_case / nested shapes for older or odd responses.
+
 Meta: **`GET /api/meta/challenge-line-heads`** for challenge head presets.
 
 ---
@@ -143,7 +145,7 @@ Use the same `{siteId}` segment as in the admin workflow route when possible (sl
 
 **Submit:** **`POST /api/public/sites/{siteId}/customer-feedback`** with the same JSON shape as today (`feedbackJson` or flat). Omit **`token`** when using the tokenless URL; include **`token`** when **`?token=`** is present (or set **`VITE_PUBLIC_CUSTOMER_FEEDBACK_TOKEN_REQUIRED=true`** to require the query param before showing the form).
 
-**Admin:** after a customer submits, refetch **`GET …/sites/{siteId}`** and **`GET …/customer-feedback`** so `certificateClientStatus` and feedback JSON stay current (workflow completion step already triggers a refresh on enter).
+**Admin:** after a customer submits, refetch **`GET …/sites/{siteId}`** and **`GET …/customer-feedback`** so `certificateClientStatus` and answer fields under **`data`** stay current (completion step triggers refresh on enter). Persistence across reload is unchanged: this SPA must **`PUT`** wizard / **`workflow-batch`** / job-data endpoints per the backend workflow doc — not automatic from the Java repo alone.
 
 ---
 
@@ -151,7 +153,7 @@ Use the same `{siteId}` segment as in the admin workflow route when possible (sl
 
 1. **`{siteId}` in paths** may be numeric id, job code, or slug (see server rules above); encode path segments in requests.
 2. **On load:** call the matching **`GET`** endpoints and hydrate tables (wizard + job-data + register + portal + machinery + users, as in `loadAll`).
-3. **On autosave / Save:** use **`workflow-batch`** for silent saves (with fallback) or individual **`PUT`**s for Save & next; wait for **`200`** and **`success: true`** before clearing “Saving…”.
+3. **On autosave / Save (this SPA only):** use **`workflow-batch`** for silent saves (with fallback) or individual **`PUT`**s for Save & next; wait for **`200`** and **`success: true`** before clearing “Saving…”. Reload persistence depends on these writes (see backend **`SITE_JOB_WORKFLOW_FRONTEND.md`** checklist).
 4. **Equipment month grid:** include **`availabilityYear`** and **`availabilityMonth`** on equipment portal saves when persisting day checkboxes.
 5. **Challenges:** send **`challengeLines`** (array / wrapper per server); wizard may embed challenge data — when both are sent in batch, **challengeLines wins**.
 6. **Feedback step:** optional **`POST …/feedback-invites`** for token links; copy link using **`customerFeedbackInviteToken`** from site or customer-feedback **`GET`**. Prefer workflow-aligned **`{siteId}`** in the public URL; refetch admin **`GET …/customer-feedback`** and **`GET …/sites/{siteId}`** when entering the completion step or after submit so **`certificateClientStatus`** updates.

@@ -5,6 +5,7 @@ import {
   buildCustomerFeedbackFrontDoorUrl,
   getCustomerFeedbackInviteTokenFromAdminDto,
   getSiteCustomerFeedbackInviteToken,
+  isPublicCustomerFeedbackTokenRequired,
 } from "../config/customerFeedbackPublic.js";
 import { siteWorkflowPathSegment } from "../utils/adminSiteRoutes.js";
 import {
@@ -44,6 +45,7 @@ import {
   TEAM_MOVEMENT_REGISTER_ROW_COUNT,
   parseBehaviourReport,
   parseCustomerFeedbackRecord,
+  extractCustomerFeedbackDtoFromAdminResponse,
   resizeBehaviourMemberColumns,
   serializeBehaviourReport,
   stripChallengeLineForApi,
@@ -1297,7 +1299,7 @@ export default function AdminSiteJobWorkflow({
       if (reg.res.ok && reg.data?.success && reg.data.data) setAttendanceRegister(reg.data.data);
       else setAttendanceRegister(null);
 
-      if (fb.res.ok && fb.data?.success) setCustomerFeedback(fb.data.data);
+      if (fb.res.ok && fb.data?.success) setCustomerFeedback(extractCustomerFeedbackDtoFromAdminResponse(fb.data) ?? null);
       else setCustomerFeedback(null);
 
       if (mach.res.ok && mach.data?.success && Array.isArray(mach.data.data)) setMachineryList(mach.data.data);
@@ -1364,7 +1366,7 @@ export default function AdminSiteJobWorkflow({
     if (!getAuthHeader()) return;
     try {
       const fb = await adminFetchJson(`${adminSitesApiBase(siteId)}/customer-feedback`);
-      if (fb.res.ok && fb.data?.success) setCustomerFeedback(fb.data.data);
+      if (fb.res.ok && fb.data?.success) setCustomerFeedback(extractCustomerFeedbackDtoFromAdminResponse(fb.data) ?? null);
       else setCustomerFeedback(null);
       const siteRes = await adminFetchJson(`${adminSitesApiBase(siteId)}`);
       if (siteRes.res.ok && siteRes.data?.success && siteRes.data.data) {
@@ -4885,11 +4887,17 @@ export default function AdminSiteJobWorkflow({
             </div>
           </div>
           {!customerFeedbackHasInviteToken ? (
-            <p className="small text-warning mb-3">
-              No invite token found — the public form needs <code>?token=…</code> in the URL and the same token in the POST body. Expose a token on{" "}
-              <strong>GET /api/admin/sites/&#123;id&#125;</strong> (e.g. <code>customerFeedbackInviteToken</code>) or on{" "}
-              <strong>GET /api/admin/sites/&#123;id&#125;/customer-feedback</strong> (e.g. <code>token</code> on the invite DTO), or paste a token from your invite flow into a custom link.
-            </p>
+            isPublicCustomerFeedbackTokenRequired() ? (
+              <p className="small text-warning mb-3">
+                No invite token found — this build expects <code>?token=…</code> in the public URL and the same token in the POST body. Expose a token on{" "}
+                <strong>GET /api/admin/sites/&#123;id&#125;</strong> (e.g. <code>customerFeedbackInviteToken</code>) or on{" "}
+                <strong>GET /api/admin/sites/&#123;id&#125;/customer-feedback</strong> (e.g. <code>token</code> on the invite DTO), or paste a token from your invite flow into a custom link.
+              </p>
+            ) : (
+              <p className="small text-muted mb-3">
+                No invite token on this link — that is normal for the <strong>tokenless</strong> public form. Use <strong>POST …/feedback-invites</strong> only if you need <code>?token=…</code> (for example PDF approval at <code>/api/public/feedback/&#123;token&#125;/approve</code>).
+              </p>
+            )
           ) : null}
           {customerFeedbackParsed ? (
             <div className="row g-2 mb-3">
