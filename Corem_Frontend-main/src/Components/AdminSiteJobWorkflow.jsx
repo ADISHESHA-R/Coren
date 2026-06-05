@@ -1548,7 +1548,10 @@ export default function AdminSiteJobWorkflow({
       const s = saveCtxRef.current;
       const ci = s.currentStepIndex ?? 0;
       const nextIdx = advance ? Math.min(ci + 1, STEPS.length - 1) : ci;
-      const wizardStep1ForPut = advance ? nextIdx + 1 : wizardPersistedStep1Ref.current;
+      const persistedStep1 = Math.min(Math.max(Number(wizardPersistedStep1Ref.current) || 1, 1), STEPS.length);
+      const uiStep1 = Math.min(Math.max(ci + 1, 1), STEPS.length);
+      /** Never send a wizard `step` below the tab being saved (fixes later tabs not persisting when ref lagged). */
+      const wizardStep1ForPut = advance ? nextIdx + 1 : Math.max(persistedStep1, uiStep1);
 
       /** One-call save for autosave / tab switch; falls back to per-endpoint PUTs if batch route is absent (404/405). */
       if (silent) {
@@ -1565,11 +1568,9 @@ export default function AdminSiteJobWorkflow({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(batchBody),
         });
-        const batchMissing = res.status === 404 || res.status === 405;
-        if (!batchMissing) {
-          if (!res.ok || data?.success === false) {
-            throw new Error(data?.message || "Failed to save workflow batch.");
-          }
+        /** Fall back to legacy PUTs if batch is missing, rejects the body, or returns an error (e.g. wizard shape mismatch). */
+        const batchOk = res.ok && data?.success !== false;
+        if (batchOk) {
           if (ci === 3) {
             const techPayload = normalizeTechnicianPaymentLines(mergeTechnicianPaymentLinesByPerson(s.technicianPaymentLines || []));
             setTechnicianPaymentLines(techPayload);
@@ -1601,6 +1602,8 @@ export default function AdminSiteJobWorkflow({
             wizardPersistedStep1Ref.current = wizardStep1ForPut;
             setCurrentStepIndex(nextIdx);
             onStepIndexChangeRef.current?.(nextIdx);
+          } else {
+            wizardPersistedStep1Ref.current = wizardStep1ForPut;
           }
           return;
         }
@@ -1733,6 +1736,8 @@ export default function AdminSiteJobWorkflow({
         setCurrentStepIndex(nextIdx);
         onStepIndexChangeRef.current?.(nextIdx);
         if (!silent) showSuccessRef.current?.("Saved.");
+      } else {
+        wizardPersistedStep1Ref.current = wizardStep1ForPut;
       }
     },
     [siteId, persistWizard],

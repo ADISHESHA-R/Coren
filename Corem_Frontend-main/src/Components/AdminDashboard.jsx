@@ -223,6 +223,8 @@ export default function AdminDashboard({ onLogout }) {
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const { showToast, showError } = useToast() ?? {};
+  const showErrorRef = useRef(showError);
+  showErrorRef.current = showError;
 
   const [view, setView] = useState("overview"); // 'overview' | 'users' | 'pending' | 'sites' | 'machinery' | 'notices' | 'siteWorkflow'
   const [workflowSiteId, setWorkflowSiteId] = useState(null);
@@ -296,6 +298,8 @@ export default function AdminDashboard({ onLogout }) {
   const [deleteSiteLoading, setDeleteSiteLoading] = useState(false);
 
   const refreshTimeoutRef = useRef(null);
+  /** Last `/admin/sites/:siteKey/...` segment so we reset sticky id when navigating between sites. */
+  const workflowRouteSegRef = useRef(null);
 
   /** Keep tab + workflow state aligned with `/admin/...` URL (shareable; works on Render with SPA fallback). */
   useEffect(() => {
@@ -307,19 +311,23 @@ export default function AdminDashboard({ onLogout }) {
     if (workflowMatch?.params?.siteKey) {
       const rawKey = workflowMatch.params.siteKey;
       const siteKey = decodeURIComponent(String(rawKey));
-      const id = resolveSiteIdFromWorkflowSegment(siteKey, sites, dashboardData?.siteStats);
-      if (id != null) {
-        setWorkflowSiteId(id);
-      } else if (siteKey) {
-        /** Backend accepts slug/job code in `/api/admin/sites/{siteId}/…`; use URL segment when list lookup misses (e.g. paging). */
-        setWorkflowSiteId(siteKey);
-      } else {
-        setWorkflowSiteId(null);
-      }
+      const resolved = resolveSiteIdFromWorkflowSegment(siteKey, sites, dashboardData?.siteStats);
+      const numeric = resolved != null && Number.isFinite(Number(resolved)) ? Number(resolved) : null;
+      setWorkflowSiteId((prev) => {
+        const segChanged = workflowRouteSegRef.current !== siteKey;
+        if (segChanged) {
+          workflowRouteSegRef.current = siteKey;
+          return numeric ?? (siteKey || null);
+        }
+        if (numeric != null) return numeric;
+        if (typeof prev === "number" && Number.isFinite(prev)) return prev;
+        return siteKey || null;
+      });
       setView("siteWorkflow");
       return;
     }
 
+    workflowRouteSegRef.current = null;
     setWorkflowSiteId(null);
     const p = pathname.replace(/\/$/, "") || "/";
     if (p === "/admin" || p === "/admin/dashboard") setView("overview");
@@ -450,17 +458,17 @@ export default function AdminDashboard({ onLogout }) {
       } else {
         const msg = data?.message || "Failed to load dashboard.";
         setDashboardError(msg);
-        showError?.(msg);
+        showErrorRef.current?.(msg);
         setDashboardData(null);
       }
     } catch {
       const msg = "Failed to load dashboard.";
       setDashboardError(msg);
-      showError?.(msg);
+      showErrorRef.current?.(msg);
       setDashboardData(null);
     }
     setDashboardLoading(false);
-  }, [showError]);
+  }, []);
 
   const fetchUsers = useCallback(async () => {
     const authHeader = getAuthHeader();

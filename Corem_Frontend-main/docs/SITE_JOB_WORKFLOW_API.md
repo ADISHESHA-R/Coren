@@ -16,9 +16,9 @@ So the SPA may call **`/api/admin/sites/{segment}/…`** using the same value as
 
 ### Coren SPA today (`AdminDashboard` + `AdminSiteJobWorkflow`)
 
-- The parent still uses **`GET /api/admin/sites?…`** and `resolveSiteIdFromWorkflowSegment` to match the route segment to a row when possible, and passes a **numeric** `siteId` into the workflow when resolution succeeds.
-- If resolution fails but the route segment is non-empty, the app may still mount the workflow with the **string segment** so deep links work once the backend accepts the slug in every path (encode path segments in fetches).
-- **Attendance portal filtering** compares `Number(siteId)` to row `siteId`; if you standardise on slug-only props, adjust that filter to match `jobCode` / `site` fields instead of numeric id only.
+- The parent uses **`GET /api/admin/sites?…`** and `resolveSiteIdFromWorkflowSegment` when possible, then passes a **numeric** `siteId` into the workflow. If lookup misses, it passes the **URL segment** (slug) so APIs still work server-side.
+- **`workflowSiteId` is sticky:** once a numeric id is known for the current route segment, the parent does **not** downgrade back to the slug when `sites` / dashboard stats refresh — that used to change the `siteId` prop and retrigger **`loadAll`** in a tight loop.
+- **Attendance portal filtering** uses numeric `site?.id` when the `siteId` prop is a slug (see `refreshSiteAttendanceList`).
 
 ---
 
@@ -69,7 +69,7 @@ Optional: **`PUT`** `/api/admin/sites/{siteId}/job-data/equipment-portal/layout`
 
 | User action | APIs |
 |-------------|------|
-| **Autosave** or **switch tab** (silent) | **`PUT`** `.../job-data/workflow-batch` first; on **404/405** → per-step **`PUT`**s + **`PUT`** `.../wizard`. |
+| **Autosave** or **switch tab** (silent) | **`PUT`** `.../job-data/workflow-batch` first; if the response is not OK or `success` is false (including **404** or **400** body mismatch), **fall back** to per-step **`PUT`**s + **`PUT`** `.../wizard`. The bundled `wizard.step` is **`max(serverPersistedStep, currentTab1Based)`** so later tabs are not saved with an outdated low step value. |
 | **Save & next** | Per-step **`PUT`**s + **`PUT`** `.../wizard` (no batch). |
 
 **Save & next** by `currentStepIndex` (0-based in code; UI step = index + 1):
